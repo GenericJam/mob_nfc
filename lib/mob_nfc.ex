@@ -23,15 +23,31 @@ defmodule MobNfc do
   ## Events (tagged `:nfc`)
 
       {:nfc, :session_started}
-      {:nfc, :ndef, %{tag_id: binary, records: [record], writable: boolean, max_size: integer}}
-      {:nfc, :tag, %{tag_id: binary, tech: [binary]}}   # a tag with no NDEF data
-      {:nfc, :session_ended, reason}                    # :done | :user_cancel | :timeout | :error
-      {:nfc, :error, reason}
+      {:nfc, :ndef, %{tag_id: binary, ndef: binary, writable: boolean, max_size: integer}}
+      {:nfc, :tag, %{tag_id: binary, tech: binary}}     # a tag with no NDEF data
+      {:nfc, :session_ended, reason}                    # :done | :user_cancel | :error | ...
+      {:nfc, :error, reason}                            # :disabled | :unavailable | :read_failed | ...
 
-  A `record` is a raw NDEF record: `%{tnf: 0..7, type: binary, id: binary,
-  payload: binary}`. `tnf` is the Type Name Format (1 = Well Known, 2 = MIME,
-  4 = External). Decode common records (Text, URI) from `type`/`payload` in your
-  app — a helper module for that is a planned addition.
+  `ndef` is the **raw NDEF message bytes**. Turn it into records with
+  `MobNfc.Ndef.parse/1` (one tested parser shared across platforms), and decode
+  the common Text/URI records with `MobNfc.Ndef.decode_text/1` / `decode_uri/1`:
+
+      def handle_info({:nfc, :ndef, %{ndef: bytes}}, socket) do
+        uris =
+          bytes
+          |> MobNfc.Ndef.parse()
+          |> Enum.flat_map(fn r ->
+            case MobNfc.Ndef.decode_uri(r) do
+              {:ok, uri} -> [uri]
+              :error -> []
+            end
+          end)
+
+        {:noreply, assign(socket, :uris, uris)}
+      end
+
+  For a non-NDEF tag, `{:nfc, :tag, %{tech: "..."}}` carries the comma-joined
+  Android tech-list (`tech` is empty on iOS).
 
   ## Availability
 
