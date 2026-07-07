@@ -111,12 +111,24 @@ defmodule MobNfcTest do
       assert reqs =~ "android.hardware.nfc"
     end
 
-    test "surfaces the raw-tag AID list and HCE service as host_requirements" do
+    test "surfaces the iOS raw-tag AID list as a host_requirement (MOB-38 gap)" do
       reqs = Enum.join(@manifest.host_requirements, "\n")
-      # iOS raw-tag mode select-identifiers (MOB-38) + HCE service/res (MOB-39)
       assert reqs =~ "select-identifiers"
-      assert reqs =~ "MobNfcApduService"
-      assert reqs =~ "HOST_APDU_SERVICE"
+    end
+
+    test "contributes the HCE service + res files automatically (no host_requirement)" do
+      # The <service> rides in android.manifest_application_snippets and the
+      # apduservice/strings ride in android.res_files (MOB-39), not a manual step.
+      snippet = Enum.join(@manifest.android.manifest_application_snippets, "\n")
+      assert snippet =~ "io.mob.nfc.MobNfcApduService"
+      assert snippet =~ "HOST_APDU_SERVICE"
+      assert snippet =~ "@xml/mob_nfc_apduservice"
+
+      assert "priv/native/android/res/xml/mob_nfc_apduservice.xml" in @manifest.android.res_files
+      assert "priv/native/android/res/values/mob_nfc_strings.xml" in @manifest.android.res_files
+
+      # No longer a manual obligation.
+      refute Enum.join(@manifest.host_requirements, "\n") =~ "MobNfcApduService"
     end
 
     test "bridge class + jni source are wired for Android" do
