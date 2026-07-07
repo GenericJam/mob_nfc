@@ -21,6 +21,7 @@ void mob_deliver_nfc_error(jlong pid, const char *reason);
 void mob_deliver_nfc_emulation_started(jlong pid);
 void mob_deliver_nfc_emulation_stopped(jlong pid);
 void mob_deliver_nfc_hce_read(jlong pid);
+void mob_deliver_nfc_hce_written(jlong pid, const unsigned char *ndef, int ndef_len);
 
 JNIEXPORT void JNICALL
 Java_io_mob_nfc_MobNfcBridge_nativeDeliverNfcSessionStarted(JNIEnv *env, jclass cls,
@@ -102,4 +103,14 @@ Java_io_mob_nfc_MobNfcBridge_nativeDeliverNfcHceRead(JNIEnv *env, jclass cls, jl
   (void)env;
   (void)cls;
   mob_deliver_nfc_hce_read(pid);
+}
+
+JNIEXPORT void JNICALL
+Java_io_mob_nfc_MobNfcBridge_nativeDeliverNfcHceWritten(JNIEnv *env, jclass cls, jlong pid,
+                                                        jbyteArray ndef) {
+  (void)cls;
+  jbyte *buf = ndef ? (*env)->GetByteArrayElements(env, ndef, NULL) : NULL;
+  jsize len = ndef ? (*env)->GetArrayLength(env, ndef) : 0;
+  mob_deliver_nfc_hce_written(pid, (const unsigned char *)buf, (int)len);
+  if (buf) (*env)->ReleaseByteArrayElements(env, ndef, buf, JNI_ABORT);
 }

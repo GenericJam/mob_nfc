@@ -294,6 +294,22 @@ pub export fn mob_deliver_nfc_hce_read(pid_long: jni.JLong) callconv(.c) void {
     deliverSimple(pid_long, "hce_read");
 }
 
+pub export fn mob_deliver_nfc_hce_written(
+    pid_long: jni.JLong,
+    ndef_ptr: ?[*]const u8,
+    ndef_len: c_int,
+) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const ndef_bin = if (ndef_ptr) |p| makeBinary(env, p, @intCast(@max(ndef_len, 0))) else makeBinary(env, "", 0);
+    const keys = [_]erts.ERL_NIF_TERM{erts.atom(env, "ndef")};
+    const vals = [_]erts.ERL_NIF_TERM{ndef_bin};
+    const map = erts.makeMap(env, &keys, &vals) orelse erts.atom(env, "nil");
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "nfc"), erts.atom(env, "hce_written"), map });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
 // ── NIF table + init entry point ─────────────────────────────────────────
 fn nifLoad(env: ?*erts.ErlNifEnv, priv: *?*anyopaque, info: erts.ERL_NIF_TERM) callconv(.c) c_int {
     _ = env;

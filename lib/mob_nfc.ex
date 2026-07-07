@@ -176,14 +176,22 @@ defmodule MobNfc do
   `{:nfc, :error, :unsupported}` there. Events:
 
       {:nfc, :emulation_started}
-      {:nfc, :hce_read}            # a reader read the emulated tag
+      {:nfc, :hce_read}                  # a reader read the emulated tag
+      {:nfc, :hce_written, %{ndef: bin}} # a reader wrote to it (`:writable` only)
       {:nfc, :emulation_stopped}
+
+  ## Options
+
+    * `:writable` — when `true`, advertise the emulated tag as writable so a
+      reader (e.g. another phone's `write_ndef/3`) can write into it; the new
+      message arrives as `{:nfc, :hce_written, %{ndef: bytes}}` and becomes what
+      the tag subsequently serves. Defaults to `false` (read-only tag).
 
   Requires the `HostApduService` + `res/xml` + AndroidManifest `<service>` the
   plugin `host_requirements` describe (mob_dev can't contribute those yet).
   """
   @spec emulate_ndef(Mob.Socket.t(), binary() | map() | [map()], keyword()) :: Mob.Socket.t()
-  def emulate_ndef(socket, content, _opts \\ []) do
+  def emulate_ndef(socket, content, opts \\ []) do
     case Platform.current() do
       :host ->
         send(self(), {:nfc, :error, :unsupported})
@@ -193,7 +201,11 @@ defmodule MobNfc do
 
       _ ->
         bytes = if is_binary(content), do: content, else: MobNfc.Ndef.encode(content)
-        :mob_nfc_nif.nfc_emulate_ndef(Jason.encode!(%{ndef: Base.encode64(bytes)}))
+        writable = Keyword.get(opts, :writable, false) == true
+
+        :mob_nfc_nif.nfc_emulate_ndef(
+          Jason.encode!(%{ndef: Base.encode64(bytes), writable: writable})
+        )
     end
 
     socket

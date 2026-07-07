@@ -57,7 +57,10 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   // HCE state (read by MobNfcApduService, which the OS instantiates separately).
   // `emulatedNdef` is the raw NDEF message the emulated tag serves; null = not
   // emulating. `emulationPid` is the BEAM process to notify on a reader read.
+  // `emulationWritable` advertises the emulated tag as writable so a reader
+  // (e.g. another phone's write_ndef) can UPDATE BINARY into it.
   @Volatile @JvmStatic var emulatedNdef: ByteArray? = null
+  @Volatile @JvmStatic var emulationWritable: Boolean = false
   @Volatile private var emulationPid: Long = 0
 
   // ── Static methods the NIF calls (signatures cached by nativeRegister) ───
@@ -170,15 +173,22 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   /** Begin emulating an NDEF tag serving `optsJson.ndef` (base64). */
   @JvmStatic
   fun nfc_emulate_ndef(pid: Long, optsJson: String?) {
+    val obj =
+        try {
+          org.json.JSONObject(optsJson ?: "{}")
+        } catch (_: Throwable) {
+          nativeDeliverNfcError(pid, "bad_payload")
+          return
+        }
     val bytes =
         try {
-          val obj = org.json.JSONObject(optsJson ?: "{}")
           android.util.Base64.decode(obj.optString("ndef", ""), android.util.Base64.DEFAULT)
         } catch (_: Throwable) {
           nativeDeliverNfcError(pid, "bad_payload")
           return
         }
     emulatedNdef = bytes
+    emulationWritable = obj.optBoolean("writable", false)
     emulationPid = pid
     nativeDeliverNfcEmulationStarted(pid)
   }
@@ -187,6 +197,7 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   @JvmStatic
   fun nfc_stop_emulation(pid: Long) {
     emulatedNdef = null
+    emulationWritable = false
     emulationPid = 0
     nativeDeliverNfcEmulationStopped(pid)
   }
@@ -196,6 +207,15 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   fun onHceRead() {
     val pid = emulationPid
     if (pid != 0L) nativeDeliverNfcHceRead(pid)
+  }
+
+  // Called by MobNfcApduService when a reader has WRITTEN a new NDEF message
+  // into the emulated (writable) tag. Updates what we now serve + notifies.
+  @JvmStatic
+  fun onHceWritten(bytes: ByteArray) {
+    emulatedNdef = bytes
+    val pid = emulationPid
+    if (pid != 0L) nativeDeliverNfcHceWritten(pid, bytes)
   }
 
   // Reader callback (binder thread): write if a write session is armed,
@@ -306,6 +326,8 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   @JvmStatic external fun nativeDeliverNfcEmulationStopped(pid: Long)
 
   @JvmStatic external fun nativeDeliverNfcHceRead(pid: Long)
+
+  @JvmStatic external fun nativeDeliverNfcHceWritten(pid: Long, ndef: ByteArray)
 }
 
 // ── Host Card Emulation service (OS-instantiated, NOT via the bootstrap) ──────
@@ -318,6 +340,11 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
 class MobNfcApduService : HostApduService() {
   // 0 = none selected, 1 = Capability Container (E103), 2 = NDEF file (E104).
   private var selectedFile = 0
+
+  // When emulating a WRITABLE tag, a reader's UPDATE BINARY commands accumulate
+  // here (the NDEF file image: [NLEN hi][NLEN lo][message…]). Null until the
+  // first write; reset after a completed write / on deactivation.
+  private var writeBuf: ByteArray? = null
 
   override fun processCommandApdu(apdu: ByteArray?, extras: Bundle?): ByteArray {
     if (apdu == null || apdu.size < 4) return SW_ERROR
@@ -366,11 +393,34 @@ class MobNfcApduService : HostApduService() {
       return slice + SW_OK
     }
 
+    // UPDATE BINARY (00 D6 <off_hi> <off_lo> <lc> <data…>) — a reader writing
+    // into the emulated NDEF file. Only honoured for a writable emulation and
+    // only against the NDEF file (E104).
+    if (apdu[0].toInt() and 0xFF == 0x00 && ins == 0xD6) {
+      if (!MobNfcBridge.emulationWritable || selectedFile != 2) return SW_FILE_NOT_FOUND
+      if (apdu.size < 5) return SW_ERROR
+      val offset = ((apdu[2].toInt() and 0xFF) shl 8) or (apdu[3].toInt() and 0xFF)
+      val lc = apdu[4].toInt() and 0xFF
+      if (apdu.size < 5 + lc) return SW_ERROR
+      val buf = writeBuf ?: ByteArray(NDEF_CAPACITY).also { writeBuf = it }
+      if (offset + lc > buf.size) return SW_ERROR
+      System.arraycopy(apdu, 5, buf, offset, lc)
+      // A non-zero NLEN at offset 0 means the message is fully written.
+      val nlen = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
+      if (nlen in 1..(buf.size - 2)) {
+        val msg = buf.copyOfRange(2, 2 + nlen)
+        writeBuf = null
+        MobNfcBridge.onHceWritten(msg)
+      }
+      return SW_OK
+    }
+
     return SW_INS_NOT_SUPPORTED
   }
 
   override fun onDeactivated(reason: Int) {
     selectedFile = 0
+    writeBuf = null
   }
 
   // NDEF file = 2-byte NLEN (message length) + the NDEF message.
@@ -381,13 +431,18 @@ class MobNfcApduService : HostApduService() {
   }
 
   // Capability Container: CCLEN=000F, ver=2.0, MLe=00FB, MLc=00FF, then the
-  // NDEF File Control TLV (T=04 L=06 fid=E104 maxsize=0400 read=00 write=FF/RO).
-  private fun capabilityContainer(): ByteArray =
-      byteArrayOf(
-          0x00, 0x0F, 0x20, 0x00, 0xFB.toByte(), 0x00, 0xFF.toByte(),
-          0x04, 0x06, 0xE1.toByte(), 0x04, 0x04, 0x00, 0x00, 0xFF.toByte())
+  // NDEF File Control TLV (T=04 L=06 fid=E104 maxsize=0400 read=00 write access).
+  // Write access is 00 (writable) when emulating a writable tag, else FF (RO).
+  private fun capabilityContainer(): ByteArray {
+    val write = if (MobNfcBridge.emulationWritable) 0x00.toByte() else 0xFF.toByte()
+    return byteArrayOf(
+        0x00, 0x0F, 0x20, 0x00, 0xFB.toByte(), 0x00, 0xFF.toByte(),
+        0x04, 0x06, 0xE1.toByte(), 0x04, 0x04, 0x00, 0x00, write)
+  }
 
   companion object {
+    // Max NDEF file size advertised in the CC (0x0400 = 1024, incl. 2-byte NLEN).
+    private const val NDEF_CAPACITY = 1024
     private val SW_OK = byteArrayOf(0x90.toByte(), 0x00)
     private val SW_FILE_NOT_FOUND = byteArrayOf(0x6A, 0x82.toByte())
     private val SW_INS_NOT_SUPPORTED = byteArrayOf(0x6D, 0x00)
