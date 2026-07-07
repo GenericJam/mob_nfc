@@ -62,6 +62,19 @@ static void nfc_send_ndef(const ErlNifPid *pid, NSData *ndef) {
   enif_free_env(e);
 }
 
+// {:nfc, :written, %{bytes: n}} — an NDEF write completed.
+static void nfc_send_written(const ErlNifPid *pid, int nbytes) {
+  ErlNifEnv *e = enif_alloc_env();
+  ERL_NIF_TERM keys[1] = {enif_make_atom(e, "bytes")};
+  ERL_NIF_TERM vals[1] = {enif_make_int(e, nbytes)};
+  ERL_NIF_TERM map;
+  enif_make_map_from_arrays(e, keys, vals, 1, &map);
+  ERL_NIF_TERM msg = enif_make_tuple3(e, enif_make_atom(e, "nfc"),
+                                      enif_make_atom(e, "written"), map);
+  enif_send(NULL, (ErlNifPid *)pid, e, msg);
+  enif_free_env(e);
+}
+
 // Lowercase hex string of an NSData UID (nil -> empty binary).
 static ERL_NIF_TERM nfc_uid_binary(ErlNifEnv *e, NSData *uid) {
   if (uid == nil || uid.length == 0) {
@@ -147,6 +160,61 @@ static NSData *mob_ndef_message_to_bytes(NFCNDEFMessage *msg) {
       [out appendData:payload];
   }
   return out;
+}
+
+// Parse raw NDEF wire bytes into an NFCNDEFMessage (inverse of
+// mob_ndef_message_to_bytes / MobNfc.Ndef.parse). CoreNFC has no
+// message-from-bytes initializer, so we rebuild NFCNDEFPayload records by hand.
+// Returns nil on malformed input.
+static NFCNDEFMessage *mob_bytes_to_ndef_message(NSData *data) {
+  const uint8_t *b = data.bytes;
+  NSUInteger len = data.length;
+  NSUInteger i = 0;
+  NSMutableArray<NFCNDEFPayload *> *records = [NSMutableArray array];
+  while (i < len) {
+    if (i + 2 > len)
+      return nil;
+    uint8_t flags = b[i++];
+    uint8_t type_len = b[i++];
+    BOOL sr = (flags & 0x10) != 0;
+    BOOL il = (flags & 0x08) != 0;
+    uint8_t tnf = flags & 0x07;
+    uint32_t payload_len;
+    if (sr) {
+      if (i + 1 > len)
+        return nil;
+      payload_len = b[i++];
+    } else {
+      if (i + 4 > len)
+        return nil;
+      payload_len = ((uint32_t)b[i] << 24) | ((uint32_t)b[i + 1] << 16) |
+                    ((uint32_t)b[i + 2] << 8) | (uint32_t)b[i + 3];
+      i += 4;
+    }
+    uint8_t id_len = 0;
+    if (il) {
+      if (i + 1 > len)
+        return nil;
+      id_len = b[i++];
+    }
+    if (i + type_len > len || i + type_len + id_len > len ||
+        (uint64_t)i + type_len + id_len + payload_len > len)
+      return nil;
+    NSData *type = [data subdataWithRange:NSMakeRange(i, type_len)];
+    i += type_len;
+    NSData *identifier = [data subdataWithRange:NSMakeRange(i, id_len)];
+    i += id_len;
+    NSData *payload = [data subdataWithRange:NSMakeRange(i, payload_len)];
+    i += payload_len;
+    NFCNDEFPayload *p =
+        [[NFCNDEFPayload alloc] initWithFormat:(NFCTypeNameFormat)tnf
+                                          type:type
+                                    identifier:identifier
+                                       payload:payload];
+    if (p)
+      [records addObject:p];
+  }
+  return [[NFCNDEFMessage alloc] initWithNDEFRecords:records];
 }
 
 // ── reader-session delegate ──────────────────────────────────────────────
@@ -255,11 +323,104 @@ static NSData *mob_ndef_message_to_bytes(NFCNDEFMessage *msg) {
 
 @end
 
+// ── writer delegate (NFCNDEFReaderSession, didDetectTags → writeNDEF) ─────
+// Implementing readerSession:didDetectTags: makes CoreNFC hand us a
+// connectable NFCNDEFTag (didDetectNDEFs is then NOT called), which is the
+// only way to write.
+@interface MobNfcWriter : NSObject <NFCNDEFReaderSessionDelegate>
+@property(nonatomic, assign) ErlNifPid pid;
+@property(nonatomic, strong) NSData *payload; // raw NDEF message bytes to write
+@end
+
+@implementation MobNfcWriter
+
+- (void)readerSessionDidBecomeActive:(NFCNDEFReaderSession *)session {
+  nfc_send_simple(&_pid, "session_started");
+}
+
+- (void)readerSession:(NFCNDEFReaderSession *)session
+        didDetectTags:(NSArray<__kindof id<NFCNDEFTag>> *)tags {
+  id<NFCNDEFTag> tag = tags.firstObject;
+  if (!tag) {
+    [session restartPolling];
+    return;
+  }
+  ErlNifPid pid = _pid;
+  NSData *payloadBytes = _payload;
+  [session connectToTag:tag
+      completionHandler:^(NSError *connErr) {
+        if (connErr) {
+          nfc_send_reason(&pid, "error", "write_failed");
+          [session invalidateSessionWithErrorMessage:@"Connection failed"];
+          return;
+        }
+        [tag queryNDEFStatus:^(NFCNDEFStatus status, NSUInteger capacity,
+                               NSError *qErr) {
+          if (qErr || status == NFCNDEFStatusNotSupported) {
+            nfc_send_reason(&pid, "error", "not_ndef");
+            [session invalidateSessionWithErrorMessage:@"Not an NDEF tag"];
+            return;
+          }
+          if (status == NFCNDEFStatusReadOnly) {
+            nfc_send_reason(&pid, "error", "read_only");
+            [session invalidateSessionWithErrorMessage:@"Tag is read-only"];
+            return;
+          }
+          NFCNDEFMessage *msg = mob_bytes_to_ndef_message(payloadBytes);
+          if (!msg) {
+            nfc_send_reason(&pid, "error", "write_failed");
+            [session invalidateSessionWithErrorMessage:@"Bad NDEF message"];
+            return;
+          }
+          if (msg.length > capacity) {
+            nfc_send_reason(&pid, "error", "too_small");
+            [session
+                invalidateSessionWithErrorMessage:@"Message too large for tag"];
+            return;
+          }
+          [tag writeNDEF:msg
+              completionHandler:^(NSError *wErr) {
+                if (wErr) {
+                  nfc_send_reason(&pid, "error", "write_failed");
+                  [session invalidateSessionWithErrorMessage:@"Write failed"];
+                } else {
+                  nfc_send_written(&pid, (int)payloadBytes.length);
+                  session.alertMessage = @"Written ✓";
+                  [session invalidateSession];
+                }
+              }];
+        }];
+      }];
+}
+
+- (void)readerSession:(NFCNDEFReaderSession *)session
+    didInvalidateWithError:(NSError *)error {
+  const char *reason = "done";
+  if ([error.domain isEqualToString:NFCErrorDomain]) {
+    switch (error.code) {
+    case NFCReaderSessionInvalidationErrorUserCanceled:
+      reason = "user_cancel";
+      break;
+    case NFCReaderSessionInvalidationErrorSessionTimeout:
+      reason = "timeout";
+      break;
+    default:
+      reason = "done";
+      break;
+    }
+  }
+  nfc_send_reason(&_pid, "session_ended", reason);
+}
+
+@end
+
 // One reader session at a time. Strong statics (ARC retains).
 static MobNfcReader *g_reader = nil;
 static NFCNDEFReaderSession *g_session = nil;
 static MobNfcTagReader *g_tag_reader = nil;
 static NFCTagReaderSession *g_tag_session = nil;
+static MobNfcWriter *g_writer = nil;
+static NFCNDEFReaderSession *g_write_session = nil;
 
 // ── NIFs ─────────────────────────────────────────────────────────────────
 static ERL_NIF_TERM nif_nfc_available(ErlNifEnv *env, int argc,
@@ -305,6 +466,10 @@ static ERL_NIF_TERM nif_nfc_start_reading(ErlNifEnv *env, int argc,
       [g_tag_session invalidateSession];
       g_tag_session = nil;
     }
+    if (g_write_session) {
+      [g_write_session invalidateSession];
+      g_write_session = nil;
+    }
     if (tag_mode) {
       // Raw-tag mode: read any tag's UID + type (incl. non-NDEF smartcards).
       g_tag_reader = [[MobNfcTagReader alloc] init];
@@ -331,6 +496,66 @@ static ERL_NIF_TERM nif_nfc_start_reading(ErlNifEnv *env, int argc,
   return enif_make_atom(env, "ok");
 }
 
+static ERL_NIF_TERM nif_nfc_start_writing(ErlNifEnv *env, int argc,
+                                          const ERL_NIF_TERM argv[]) {
+  (void)argc;
+  if (!NFCNDEFReaderSession.readingAvailable) {
+    ErlNifPid p;
+    enif_self(env, &p);
+    nfc_send_reason(&p, "error", "unavailable");
+    return enif_make_atom(env, "ok");
+  }
+
+  ErlNifPid pid;
+  enif_self(env, &pid);
+
+  NSString *alert = @"Hold your phone near a writable NFC tag";
+  __block NSData *payload = nil;
+  ErlNifBinary bin;
+  if (enif_inspect_binary(env, argv[0], &bin)) {
+    NSData *d = [NSData dataWithBytes:bin.data length:bin.size];
+    id obj = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+      if ([obj objectForKey:@"alert"])
+        alert = [obj objectForKey:@"alert"];
+      id ndef_b64 = [obj objectForKey:@"ndef"];
+      if ([ndef_b64 isKindOfClass:[NSString class]])
+        payload = [[NSData alloc] initWithBase64EncodedString:ndef_b64
+                                                     options:0];
+    }
+  }
+
+  if (payload == nil) {
+    nfc_send_reason(&pid, "error", "write_failed");
+    return enif_make_atom(env, "ok");
+  }
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (g_session) {
+      [g_session invalidateSession];
+      g_session = nil;
+    }
+    if (g_tag_session) {
+      [g_tag_session invalidateSession];
+      g_tag_session = nil;
+    }
+    if (g_write_session) {
+      [g_write_session invalidateSession];
+      g_write_session = nil;
+    }
+    g_writer = [[MobNfcWriter alloc] init];
+    g_writer.pid = pid;
+    g_writer.payload = payload;
+    g_write_session = [[NFCNDEFReaderSession alloc]
+                initWithDelegate:g_writer
+                           queue:dispatch_get_main_queue()
+        invalidateAfterFirstRead:NO];
+    g_write_session.alertMessage = alert;
+    [g_write_session beginSession];
+  });
+  return enif_make_atom(env, "ok");
+}
+
 static ERL_NIF_TERM nif_nfc_stop_reading(ErlNifEnv *env, int argc,
                                          const ERL_NIF_TERM argv[]) {
   (void)argc;
@@ -344,6 +569,10 @@ static ERL_NIF_TERM nif_nfc_stop_reading(ErlNifEnv *env, int argc,
       [g_tag_session invalidateSession];
       g_tag_session = nil;
     }
+    if (g_write_session) {
+      [g_write_session invalidateSession];
+      g_write_session = nil;
+    }
   });
   return enif_make_atom(env, "ok");
 }
@@ -351,6 +580,7 @@ static ERL_NIF_TERM nif_nfc_stop_reading(ErlNifEnv *env, int argc,
 static ErlNifFunc nif_funcs[] = {
     {"nfc_available", 0, nif_nfc_available, 0},
     {"nfc_start_reading", 1, nif_nfc_start_reading, 0},
+    {"nfc_start_writing", 1, nif_nfc_start_writing, 0},
     {"nfc_stop_reading", 0, nif_nfc_stop_reading, 0},
 };
 

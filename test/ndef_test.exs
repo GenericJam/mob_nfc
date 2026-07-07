@@ -66,4 +66,51 @@ defmodule MobNfc.NdefTest do
       assert Ndef.decode_uri(rec) == :error
     end
   end
+
+  describe "encode/1" do
+    test "text_record round-trips through parse + decode_text" do
+      bytes = Ndef.encode(Ndef.text_record("hi"))
+      [rec] = Ndef.parse(bytes)
+      assert Ndef.decode_text(rec) == {:ok, %{text: "hi", lang: "en"}}
+    end
+
+    test "text_record honours a non-default language" do
+      [rec] = Ndef.parse(Ndef.encode(Ndef.text_record("bonjour", "fr")))
+      assert Ndef.decode_text(rec) == {:ok, %{text: "bonjour", lang: "fr"}}
+    end
+
+    test "uri_record abbreviates a known prefix and round-trips" do
+      rec = Ndef.uri_record("https://mob.dev")
+      # 0x04 = "https://", payload is code + "mob.dev"
+      assert %{tnf: 1, type: "U", payload: <<0x04, "mob.dev">>} = rec
+      [back] = Ndef.parse(Ndef.encode(rec))
+      assert Ndef.decode_uri(back) == {:ok, "https://mob.dev"}
+    end
+
+    test "uri_record with no known prefix uses code 0" do
+      assert %{payload: <<0x00, "xyz://weird">>} = Ndef.uri_record("xyz://weird")
+    end
+
+    test "encodes a multi-record message with correct MB/ME flags" do
+      bytes = Ndef.encode([Ndef.text_record("a"), Ndef.uri_record("tel:123")])
+      # first record: MB set, ME clear (0x91); last: ME set, MB clear (0x51)
+      assert <<0x91, _::binary>> = bytes
+      assert [%{type: "T"}, %{type: "U"}] = Ndef.parse(bytes)
+    end
+
+    test "accepts a bare record (not wrapped in a list)" do
+      assert Ndef.encode(Ndef.text_record("x")) == Ndef.encode([Ndef.text_record("x")])
+      # single record is both first and last: MB+ME+SR = 0xD1
+      assert <<0xD1, _::binary>> = Ndef.encode(Ndef.text_record("x"))
+    end
+
+    test "uses the 4-byte length form for payloads over 255 bytes" do
+      big = String.duplicate("z", 300)
+      bytes = Ndef.encode(Ndef.text_record(big))
+      # SR flag must be clear on the (single) record: 0xC1
+      assert <<0xC1, _::binary>> = bytes
+      [rec] = Ndef.parse(bytes)
+      assert Ndef.decode_text(rec) == {:ok, %{text: big, lang: "en"}}
+    end
+  end
 end

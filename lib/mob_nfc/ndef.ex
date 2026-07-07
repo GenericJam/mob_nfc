@@ -119,4 +119,86 @@ defmodule MobNfc.Ndef do
   end
 
   def decode_uri(_), do: :error
+
+  @doc """
+  Encode records into a raw NDEF message binary — the inverse of `parse/1`,
+  ready for `MobNfc.write_ndef/3`. Sets MB/ME on the first/last record, uses the
+  Short-Record form when the payload is ≤ 255 bytes, and includes the ID field
+  only when non-empty. Accepts a single record or a list.
+
+      MobNfc.Ndef.encode([MobNfc.Ndef.uri_record("https://mob.io")])
+  """
+  @spec encode(ndef_record() | [ndef_record()]) :: binary()
+  def encode(record) when is_map(record), do: encode([record])
+
+  def encode(records) when is_list(records) do
+    n = length(records)
+
+    records
+    |> Enum.with_index()
+    |> Enum.map(fn {r, i} -> encode_record(r, i == 0, i == n - 1) end)
+    |> IO.iodata_to_binary()
+  end
+
+  defp encode_record(r, first?, last?) do
+    tnf = Map.get(r, :tnf, 1)
+    type = Map.get(r, :type, "")
+    id = Map.get(r, :id, "")
+    payload = Map.get(r, :payload, "")
+
+    sr = byte_size(payload) <= 255
+    il = byte_size(id) > 0
+
+    flags =
+      bor_all([
+        if(first?, do: 0x80, else: 0),
+        if(last?, do: 0x40, else: 0),
+        if(sr, do: 0x10, else: 0),
+        if(il, do: 0x08, else: 0),
+        tnf &&& 0x07
+      ])
+
+    payload_len =
+      if sr, do: <<byte_size(payload)::8>>, else: <<byte_size(payload)::32>>
+
+    id_len = if il, do: <<byte_size(id)::8>>, else: <<>>
+
+    [<<flags::8, byte_size(type)::8>>, payload_len, id_len, type, id, payload]
+  end
+
+  defp bor_all(list), do: Enum.reduce(list, 0, &bor/2)
+
+  @doc """
+  Build a Well-Known **Text** record (UTF-8) for `encode/1` / `write_ndef/3`.
+
+      MobNfc.Ndef.text_record("hello")            # lang "en"
+      MobNfc.Ndef.text_record("bonjour", "fr")
+  """
+  @spec text_record(binary(), binary()) :: ndef_record()
+  def text_record(text, lang \\ "en") when is_binary(text) and is_binary(lang) do
+    status = byte_size(lang) &&& 0x3F
+    %{tnf: 1, type: "T", id: "", payload: <<status::8, lang::binary, text::binary>>}
+  end
+
+  @doc """
+  Build a Well-Known **URI** record, abbreviating a known scheme/prefix per the
+  URI RTD table so the tag stores fewer bytes.
+
+      MobNfc.Ndef.uri_record("https://mob.io")   # prefix code 0x04 + "mob.io"
+  """
+  @spec uri_record(binary()) :: ndef_record()
+  def uri_record(uri) when is_binary(uri) do
+    {code, rest} = abbreviate_uri(uri)
+    %{tnf: 1, type: "U", id: "", payload: <<code::8, rest::binary>>}
+  end
+
+  defp abbreviate_uri(uri) do
+    {code, prefix} =
+      1..(tuple_size(@uri_prefixes) - 1)
+      |> Enum.map(fn i -> {i, elem(@uri_prefixes, i)} end)
+      |> Enum.filter(fn {_i, p} -> p != "" and String.starts_with?(uri, p) end)
+      |> Enum.max_by(fn {_i, p} -> byte_size(p) end, fn -> {0, ""} end)
+
+    {code, binary_part(uri, byte_size(prefix), byte_size(uri) - byte_size(prefix))}
+  end
 end

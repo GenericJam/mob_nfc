@@ -27,6 +27,7 @@ extern var g_jvm: ?*jni.JavaVM;
 const NfcMethods = struct {
     available: jni.JMethodID = null,
     start_reading: jni.JMethodID = null,
+    start_writing: jni.JMethodID = null,
     stop_reading: jni.JMethodID = null,
 };
 var g_nfc: NfcMethods = .{};
@@ -37,6 +38,7 @@ export fn Java_io_mob_nfc_MobNfcBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jn
     if (g_nfc_cls == null) return;
     g_nfc.available = jni.getStaticMethodID(jenv, cls, "nfc_available", "()Z");
     g_nfc.start_reading = jni.getStaticMethodID(jenv, cls, "nfc_start_reading", "(JLjava/lang/String;)V");
+    g_nfc.start_writing = jni.getStaticMethodID(jenv, cls, "nfc_start_writing", "(JLjava/lang/String;)V");
     g_nfc.stop_reading = jni.getStaticMethodID(jenv, cls, "nfc_stop_reading", "(J)V");
 }
 
@@ -90,14 +92,13 @@ export fn nif_nfc_available(
     return if (r != 0) erts.atom(env, "true") else erts.atom(env, "false");
 }
 
-export fn nif_nfc_start_reading(
+// Shared: call a (JLjava/lang/String;)V bridge method with the caller's pid and
+// argv[0] (the opts JSON binary) marshalled to a Java String.
+fn startWithJson(
     env: ?*erts.ErlNifEnv,
-    argc: c_int,
     argv: [*]const erts.ERL_NIF_TERM,
-) callconv(.c) erts.ERL_NIF_TERM {
-    _ = argc;
-    if (g_nfc.start_reading == null) return nfcUnsupported(env);
-
+    method: jni.JMethodID,
+) erts.ERL_NIF_TERM {
     var pid: erts.ErlNifPid = undefined;
     _ = erts.enif_self(env, &pid);
 
@@ -116,9 +117,29 @@ export fn nif_nfc_start_reading(
         jstr = jni.newStringUTF(jenv, @ptrCast(buf));
         jni.free(buf);
     }
-    jenv.*.CallStaticVoidMethod.?(jenv, g_nfc_cls, g_nfc.start_reading, pidToJlong(pid), jstr);
+    jenv.*.CallStaticVoidMethod.?(jenv, g_nfc_cls, method, pidToJlong(pid), jstr);
     if (jstr != null) jni.deleteLocalRef(jenv, jstr);
     return erts.ok(env);
+}
+
+export fn nif_nfc_start_reading(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    if (g_nfc.start_reading == null) return nfcUnsupported(env);
+    return startWithJson(env, argv, g_nfc.start_reading);
+}
+
+export fn nif_nfc_start_writing(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    if (g_nfc.start_writing == null) return nfcUnsupported(env);
+    return startWithJson(env, argv, g_nfc.start_writing);
 }
 
 export fn nif_nfc_stop_reading(
@@ -192,6 +213,17 @@ pub export fn mob_deliver_nfc_tag(
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
+pub export fn mob_deliver_nfc_written(pid_long: jni.JLong, nbytes: c_int) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const keys = [_]erts.ERL_NIF_TERM{erts.atom(env, "bytes")};
+    const vals = [_]erts.ERL_NIF_TERM{erts.enif_make_int(env, nbytes)};
+    const map = erts.makeMap(env, &keys, &vals) orelse erts.atom(env, "nil");
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "nfc"), erts.atom(env, "written"), map });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
 pub export fn mob_deliver_nfc_session_ended(pid_long: jni.JLong, reason: ?[*:0]const u8) callconv(.c) void {
     var pid = pidFromLong(pid_long);
     const env = erts.enif_alloc_env() orelse return;
@@ -221,6 +253,7 @@ fn nifLoad(env: ?*erts.ErlNifEnv, priv: *?*anyopaque, info: erts.ERL_NIF_TERM) c
 const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "nfc_available", .arity = 0, .fptr = nif_nfc_available, .flags = 0 },
     .{ .name = "nfc_start_reading", .arity = 1, .fptr = nif_nfc_start_reading, .flags = 0 },
+    .{ .name = "nfc_start_writing", .arity = 1, .fptr = nif_nfc_start_writing, .flags = 0 },
     .{ .name = "nfc_stop_reading", .arity = 0, .fptr = nif_nfc_stop_reading, .flags = 0 },
 };
 

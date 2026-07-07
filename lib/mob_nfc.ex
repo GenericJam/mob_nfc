@@ -3,8 +3,9 @@ defmodule MobNfc do
   NFC — read NDEF messages from nearby tags.
 
   iOS uses `CoreNFC` (`NFCNDEFReaderSession`, iPhone 7+); Android uses
-  `NfcAdapter` reader mode (`enableReaderMode`). Tag *writing* and card
-  emulation (HCE) are planned follow-ups — this first cut is NDEF reading.
+  `NfcAdapter` reader mode (`enableReaderMode`). Reads NDEF messages
+  (`start_reading/2`) and writes them (`write_ndef/3`). Card emulation (HCE) is
+  a planned Android-only follow-up.
 
   ## API style
 
@@ -25,8 +26,9 @@ defmodule MobNfc do
       {:nfc, :session_started}
       {:nfc, :ndef, %{tag_id: binary, ndef: binary, writable: boolean, max_size: integer}}
       {:nfc, :tag, %{tag_id: binary, tech: binary}}     # a tag with no NDEF data
+      {:nfc, :written, %{bytes: integer}}               # write_ndef/3 succeeded
       {:nfc, :session_ended, reason}                    # :done | :user_cancel | :error | ...
-      {:nfc, :error, reason}                            # :disabled | :unavailable | :read_failed | ...
+      {:nfc, :error, reason}                            # :disabled | :unavailable | :read_failed | :read_only | :too_small | :not_ndef | ...
 
   `ndef` is the **raw NDEF message bytes**. Turn it into records with
   `MobNfc.Ndef.parse/1` (one tested parser shared across platforms), and decode
@@ -107,6 +109,43 @@ defmodule MobNfc do
       alert = Keyword.get(opts, :alert, "Hold your phone near an NFC tag")
       mode = if Keyword.get(opts, :mode) == :tag, do: "tag", else: "ndef"
       :mob_nfc_nif.nfc_start_reading(Jason.encode!(%{alert: alert, mode: mode}))
+    end
+
+    socket
+  end
+
+  @doc """
+  Write an NDEF message to the next tag tapped; result flows to the caller.
+
+  `content` is either the raw NDEF message bytes (a `binary`) or a record / list
+  of records to encode via `MobNfc.Ndef.encode/1`:
+
+      MobNfc.write_ndef(socket, MobNfc.Ndef.uri_record("https://mob.dev"))
+      MobNfc.write_ndef(socket, [MobNfc.Ndef.text_record("hi"), uri_rec])
+
+  This opens the same reader UI as `start_reading/2` (iOS system sheet; Android
+  foreground reader mode) but, on tag detection, writes instead of reads. The
+  tag must be NDEF-formatted and writable and have enough capacity. Results:
+
+      {:nfc, :written, %{bytes: integer}}     # wrote N bytes successfully
+      {:nfc, :error, :read_only}              # tag is locked / not writable
+      {:nfc, :error, :too_small}              # message exceeds tag capacity
+      {:nfc, :error, :not_ndef}               # tag isn't NDEF-formatted
+      {:nfc, :error, :write_failed}           # I/O error mid-write
+
+  ## Options
+
+    * `:alert` — iOS reader-sheet prompt string. Ignored on Android.
+  """
+  @spec write_ndef(Mob.Socket.t(), binary() | map() | [map()], keyword()) :: Mob.Socket.t()
+  def write_ndef(socket, content, opts \\ []) do
+    if Platform.unsupported?(Platform.current()) do
+      send(self(), {:nfc, :error, :unsupported})
+    else
+      bytes = if is_binary(content), do: content, else: MobNfc.Ndef.encode(content)
+      alert = Keyword.get(opts, :alert, "Hold your phone near a writable NFC tag")
+      json = Jason.encode!(%{alert: alert, ndef: Base.encode64(bytes)})
+      :mob_nfc_nif.nfc_start_writing(json)
     end
 
     socket

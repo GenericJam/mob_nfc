@@ -13,6 +13,7 @@
 -export([
     nfc_available/0,
     nfc_start_reading/1,
+    nfc_start_writing/1,
     nfc_stop_reading/0
 ]).
 -on_load(init/0).
@@ -31,6 +32,13 @@ nfc_available() ->
 %% `{"alert":"Hold your phone near a tag"}` (the iOS reader-sheet prompt;
 %% ignored on Android). Captures the caller; NDEF/tag events flow back to it.
 nfc_start_reading(_OptsJson) ->
+    erlang:nif_error(nif_not_loaded).
+
+%% Start a write session. _OptsJson is a JSON binary, e.g.
+%% `{"alert":"...","ndef":"<base64 NDEF message>"}`. Captures the caller; on tag
+%% detection the encoded message is written and a {:nfc, :written | :error, _}
+%% reply flows back.
+nfc_start_writing(_OptsJson) ->
     erlang:nif_error(nif_not_loaded).
 
 %% Stop the active reader session started by this process.

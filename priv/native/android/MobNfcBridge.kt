@@ -18,9 +18,11 @@
 package io.mob.nfc
 
 import android.app.Activity
+import android.nfc.NdefMessage
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.Ndef
+import android.nfc.tech.NdefFormatable
 import java.lang.ref.WeakReference
 
 object MobNfcBridge : io.mob.plugin.MobActivityAware {
@@ -46,6 +48,9 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
 
   // One reader session at a time in this cut.
   @Volatile private var adapter: NfcAdapter? = null
+
+  // Set while a write session is armed; the next tapped tag is written, not read.
+  @Volatile private var pendingWrite: ByteArray? = null
 
   // ── Static methods the NIF calls (signatures cached by nativeRegister) ───
 
@@ -92,9 +97,54 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
     }
   }
 
+  /** Arm a write session; the next tapped tag gets `optsJson.ndef` (base64). */
+  @JvmStatic
+  fun nfc_start_writing(pid: Long, optsJson: String?) {
+    val bytes =
+        try {
+          val obj = org.json.JSONObject(optsJson ?: "{}")
+          android.util.Base64.decode(obj.optString("ndef", ""), android.util.Base64.DEFAULT)
+        } catch (_: Throwable) {
+          nativeDeliverNfcError(pid, "write_failed")
+          return
+        }
+    val act =
+        activity()
+            ?: run {
+              nativeDeliverNfcError(pid, "no_activity")
+              return
+            }
+    val a = NfcAdapter.getDefaultAdapter(act)
+    if (a == null) {
+      nativeDeliverNfcError(pid, "unavailable")
+      return
+    }
+    if (!a.isEnabled) {
+      nativeDeliverNfcError(pid, "disabled")
+      return
+    }
+    adapter = a
+    pendingWrite = bytes
+    val flags =
+        NfcAdapter.FLAG_READER_NFC_A or
+            NfcAdapter.FLAG_READER_NFC_B or
+            NfcAdapter.FLAG_READER_NFC_F or
+            NfcAdapter.FLAG_READER_NFC_V or
+            NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
+    act.runOnUiThread {
+      try {
+        a.enableReaderMode(act, { tag -> onTag(pid, tag) }, flags, null)
+        nativeDeliverNfcSessionStarted(pid)
+      } catch (_: Throwable) {
+        nativeDeliverNfcError(pid, "start_failed")
+      }
+    }
+  }
+
   /** Stop the reader session started by `pid`. */
   @JvmStatic
   fun nfc_stop_reading(pid: Long) {
+    pendingWrite = null
     val act = activity()
     val a = adapter
     if (act != null && a != null) {
@@ -109,8 +159,15 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
     }
   }
 
-  // Reader callback (binder thread): read NDEF if present, else report the tag.
+  // Reader callback (binder thread): write if a write session is armed,
+  // otherwise read NDEF if present, else report the tag.
   private fun onTag(pid: Long, tag: Tag) {
+    val toWrite = pendingWrite
+    if (toWrite != null) {
+      pendingWrite = null
+      writeTag(pid, tag, toWrite)
+      return
+    }
     val tagId = tag.id?.joinToString("") { "%02x".format(it.toInt() and 0xFF) } ?: ""
     val ndef = Ndef.get(tag)
     if (ndef == null) {
@@ -132,6 +189,59 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
     }
   }
 
+  // Write path (binder thread): NDEF-formatted tags via Ndef, blank tags via
+  // NdefFormatable.format. Reports :read_only / :too_small / :not_ndef /
+  // :write_failed, or :written on success.
+  private fun writeTag(pid: Long, tag: Tag, bytes: ByteArray) {
+    val msg =
+        try {
+          NdefMessage(bytes)
+        } catch (_: Throwable) {
+          nativeDeliverNfcError(pid, "write_failed")
+          return
+        }
+    val ndef = Ndef.get(tag)
+    if (ndef != null) {
+      try {
+        ndef.connect()
+        if (!ndef.isWritable) {
+          nativeDeliverNfcError(pid, "read_only")
+          return
+        }
+        if (ndef.maxSize < bytes.size) {
+          nativeDeliverNfcError(pid, "too_small")
+          return
+        }
+        ndef.writeNdefMessage(msg)
+        nativeDeliverNfcWritten(pid, bytes.size)
+      } catch (_: Throwable) {
+        nativeDeliverNfcError(pid, "write_failed")
+      } finally {
+        try {
+          ndef.close()
+        } catch (_: Throwable) {}
+      }
+      return
+    }
+    // Not yet NDEF-formatted: format-and-write in one shot if the tag supports it.
+    val formatable = NdefFormatable.get(tag)
+    if (formatable != null) {
+      try {
+        formatable.connect()
+        formatable.format(msg)
+        nativeDeliverNfcWritten(pid, bytes.size)
+      } catch (_: Throwable) {
+        nativeDeliverNfcError(pid, "write_failed")
+      } finally {
+        try {
+          formatable.close()
+        } catch (_: Throwable) {}
+      }
+      return
+    }
+    nativeDeliverNfcError(pid, "not_ndef")
+  }
+
   // ── delivery externs (resolve to mob_nfc_jni.c thunks) ───────────────────
   @JvmStatic external fun nativeDeliverNfcSessionStarted(pid: Long)
 
@@ -145,6 +255,8 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   )
 
   @JvmStatic external fun nativeDeliverNfcTag(pid: Long, tagId: String, tech: String)
+
+  @JvmStatic external fun nativeDeliverNfcWritten(pid: Long, bytes: Int)
 
   @JvmStatic external fun nativeDeliverNfcSessionEnded(pid: Long, reason: String)
 

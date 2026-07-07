@@ -15,6 +15,7 @@ void mob_deliver_nfc_session_started(jlong pid);
 void mob_deliver_nfc_ndef(jlong pid, const char *tag_id, const unsigned char *ndef,
                           int ndef_len, int writable, int max_size);
 void mob_deliver_nfc_tag(jlong pid, const char *tag_id, const char *tech);
+void mob_deliver_nfc_written(jlong pid, int nbytes);
 void mob_deliver_nfc_session_ended(jlong pid, const char *reason);
 void mob_deliver_nfc_error(jlong pid, const char *reason);
 
@@ -49,6 +50,14 @@ Java_io_mob_nfc_MobNfcBridge_nativeDeliverNfcTag(JNIEnv *env, jclass cls, jlong 
   mob_deliver_nfc_tag(pid, c_tag ? c_tag : "", c_tech ? c_tech : "");
   if (c_tag) (*env)->ReleaseStringUTFChars(env, tag_id, c_tag);
   if (c_tech) (*env)->ReleaseStringUTFChars(env, tech, c_tech);
+}
+
+JNIEXPORT void JNICALL
+Java_io_mob_nfc_MobNfcBridge_nativeDeliverNfcWritten(JNIEnv *env, jclass cls, jlong pid,
+                                                     jint bytes) {
+  (void)env;
+  (void)cls;
+  mob_deliver_nfc_written(pid, (int)bytes);
 }
 
 JNIEXPORT void JNICALL
