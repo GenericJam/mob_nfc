@@ -45,6 +45,12 @@
     plist_keys: %{
       NFCReaderUsageDescription:
         "NFC access is required to read and write nearby tags."
+      # NOTE: raw-tag mode (`MobNfc.start_reading(mode: :tag)`, iOS
+      # NFCTagReaderSession) also needs the *array-valued* Info.plist key
+      # com.apple.developer.nfc.readersession.iso7816.select-identifiers, but
+      # mob_dev's plugin plist merge only supports scalar (string/integer)
+      # values today (see MOB-38), so it can't be declared here — it's surfaced
+      # as a host_requirement below.
     }
   },
   # Obligations the manifest schema can't express yet (see MOB-37 for the iOS
@@ -56,6 +62,13 @@
       "    <array><string>NDEF</string><string>TAG</string></array>",
     "Android: add to AndroidManifest.xml so flash-less/NFC-less devices still " <>
       "install and background tag dispatch works:\n" <>
-      "    <uses-feature android:name=\"android.hardware.nfc\" android:required=\"false\"/>"
+      "    <uses-feature android:name=\"android.hardware.nfc\" android:required=\"false\"/>",
+    "iOS raw-tag mode (start_reading(mode: :tag)) needs an ISO7816 AID list in " <>
+      "ios/<app>.plist (mob_dev can't merge array plist keys yet — MOB-38):\n" <>
+      "    <key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>\n" <>
+      "    <array><string>D2760000850101</string> <!-- NFC Forum Type 4 (NDEF) -->\n" <>
+      "           <string>325041592E5359532E4444463031</string> <!-- PPSE --></array>\n" <>
+      "  Add the specific AIDs of the ISO7816 tags you intend to read. iOS blocks " <>
+      "EMV payment cards regardless (reserved for the Secure Element)."
   ]
 }

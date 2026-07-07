@@ -92,6 +92,12 @@ defmodule MobNfc do
   ## Options
 
     * `:alert` — iOS reader-sheet prompt string. Ignored on Android.
+    * `:mode` — `:ndef` (default) or `:tag`. **iOS only** — picks the CoreNFC
+      session: `:ndef` (`NFCNDEFReaderSession`, reads NDEF messages) or `:tag`
+      (`NFCTagReaderSession`, reads any tag's UID + type, incl. non-NDEF
+      smartcards like payment cards). Android's reader mode always surfaces both
+      (`{:nfc, :ndef, ...}` for NDEF, `{:nfc, :tag, ...}` otherwise) regardless
+      of `:mode`.
   """
   @spec start_reading(Mob.Socket.t(), keyword()) :: Mob.Socket.t()
   def start_reading(socket, opts \\ []) do
@@ -99,7 +105,8 @@ defmodule MobNfc do
       send(self(), {:nfc, :error, :unsupported})
     else
       alert = Keyword.get(opts, :alert, "Hold your phone near an NFC tag")
-      :mob_nfc_nif.nfc_start_reading(Jason.encode!(%{alert: alert}))
+      mode = if Keyword.get(opts, :mode) == :tag, do: "tag", else: "ndef"
+      :mob_nfc_nif.nfc_start_reading(Jason.encode!(%{alert: alert, mode: mode}))
     end
 
     socket
