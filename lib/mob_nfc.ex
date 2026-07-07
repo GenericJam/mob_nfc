@@ -125,6 +125,7 @@ defmodule MobNfc do
   @doc false
   # Pure: the opts JSON handed to the read NIF. Public for testing (the NIF
   # path can't run off-device, so the transport shape is asserted here instead).
+  @spec reading_json(keyword()) :: String.t()
   def reading_json(opts) do
     alert = Keyword.get(opts, :alert, "Hold your phone near an NFC tag")
     mode = if Keyword.get(opts, :mode) == :tag, do: "tag", else: "ndef"
@@ -167,6 +168,7 @@ defmodule MobNfc do
 
   @doc false
   # Pure: the opts JSON handed to the write NIF. Public for testing.
+  @spec writing_json(binary() | map() | [map()], keyword()) :: String.t()
   def writing_json(content, opts) do
     alert = Keyword.get(opts, :alert, "Hold your phone near a writable NFC tag")
     Jason.encode!(%{alert: alert, ndef: Base.encode64(to_ndef_bytes(content))})
@@ -229,6 +231,7 @@ defmodule MobNfc do
 
   @doc false
   # Pure: the opts JSON handed to the emulate NIF. Public for testing.
+  @spec emulation_json(binary() | map() | [map()], keyword()) :: String.t()
   def emulation_json(content, opts) do
     writable = Keyword.get(opts, :writable, false) == true
     Jason.encode!(%{ndef: Base.encode64(to_ndef_bytes(content)), writable: writable})
@@ -236,6 +239,7 @@ defmodule MobNfc do
 
   @doc false
   # Content is either raw NDEF bytes or record(s) to encode.
+  @spec to_ndef_bytes(binary() | map() | [map()]) :: binary()
   def to_ndef_bytes(content) when is_binary(content), do: content
   def to_ndef_bytes(content), do: MobNfc.Ndef.encode(content)
 
