@@ -1,11 +1,14 @@
 defmodule MobNfc do
   @moduledoc """
-  NFC — read NDEF messages from nearby tags.
+  NFC — read/write NDEF tags, read raw tag UIDs, and emulate a tag with Android
+  card emulation (HCE).
 
-  iOS uses `CoreNFC` (`NFCNDEFReaderSession`, iPhone 7+); Android uses
-  `NfcAdapter` reader mode (`enableReaderMode`). Reads NDEF messages
-  (`start_reading/2`) and writes them (`write_ndef/3`). Card emulation (HCE) is
-  a planned Android-only follow-up.
+  iOS uses `CoreNFC` (`NFCNDEFReaderSession` / `NFCTagReaderSession`, iPhone 7+);
+  Android uses `NfcAdapter` reader mode (`enableReaderMode`). Read NDEF messages
+  (`start_reading/2`), write them (`write_ndef/3`), read a raw tag UID
+  (`start_reading/2` with `mode: :tag`), and — **on Android only** — emulate an
+  NDEF tag with `emulate_ndef/3` (HCE; iOS has no third-party host card
+  emulation, so `emulate_ndef/3` sends `{:nfc, :error, :unsupported}` there).
 
   ## API style
 
@@ -17,8 +20,8 @@ defmodule MobNfc do
         {:noreply, MobNfc.start_reading(socket)}
       end
 
-      def handle_info({:nfc, :ndef, %{records: records}}, socket) do
-        {:noreply, assign(socket, :last_tag, records)}
+      def handle_info({:nfc, :ndef, %{ndef: bytes}}, socket) do
+        {:noreply, assign(socket, :last_tag, MobNfc.Ndef.parse(bytes))}
       end
 
   ## Events (tagged `:nfc`)
@@ -28,7 +31,14 @@ defmodule MobNfc do
       {:nfc, :tag, %{tag_id: binary, tech: binary}}     # a tag with no NDEF data
       {:nfc, :written, %{bytes: integer}}               # write_ndef/3 succeeded
       {:nfc, :session_ended, reason}                    # :done | :user_cancel | :error | ...
-      {:nfc, :error, reason}                            # :disabled | :unavailable | :read_failed | :read_only | :too_small | :not_ndef | ...
+      {:nfc, :error, reason}                            # :disabled | :unavailable | :read_failed | :read_only | :too_small | :not_ndef | :unsupported | ...
+
+  Android card emulation (HCE) via `emulate_ndef/3` adds:
+
+      {:nfc, :emulation_started}                        # HCE active
+      {:nfc, :hce_read}                                 # a reader read the emulated tag
+      {:nfc, :hce_written, %{ndef: binary}}             # a reader wrote to it (writable HCE)
+      {:nfc, :emulation_stopped}                        # stop_emulation/1
 
   `ndef` is the **raw NDEF message bytes**. Turn it into records with
   `MobNfc.Ndef.parse/1` (one tested parser shared across platforms), and decode
@@ -115,6 +125,7 @@ defmodule MobNfc do
   @doc false
   # Pure: the opts JSON handed to the read NIF. Public for testing (the NIF
   # path can't run off-device, so the transport shape is asserted here instead).
+  @spec reading_json(keyword()) :: String.t()
   def reading_json(opts) do
     alert = Keyword.get(opts, :alert, "Hold your phone near an NFC tag")
     mode = if Keyword.get(opts, :mode) == :tag, do: "tag", else: "ndef"
@@ -157,6 +168,7 @@ defmodule MobNfc do
 
   @doc false
   # Pure: the opts JSON handed to the write NIF. Public for testing.
+  @spec writing_json(binary() | map() | [map()], keyword()) :: String.t()
   def writing_json(content, opts) do
     alert = Keyword.get(opts, :alert, "Hold your phone near a writable NFC tag")
     Jason.encode!(%{alert: alert, ndef: Base.encode64(to_ndef_bytes(content))})
@@ -219,6 +231,7 @@ defmodule MobNfc do
 
   @doc false
   # Pure: the opts JSON handed to the emulate NIF. Public for testing.
+  @spec emulation_json(binary() | map() | [map()], keyword()) :: String.t()
   def emulation_json(content, opts) do
     writable = Keyword.get(opts, :writable, false) == true
     Jason.encode!(%{ndef: Base.encode64(to_ndef_bytes(content)), writable: writable})
@@ -226,6 +239,7 @@ defmodule MobNfc do
 
   @doc false
   # Content is either raw NDEF bytes or record(s) to encode.
+  @spec to_ndef_bytes(binary() | map() | [map()]) :: binary()
   def to_ndef_bytes(content) when is_binary(content), do: content
   def to_ndef_bytes(content), do: MobNfc.Ndef.encode(content)
 
