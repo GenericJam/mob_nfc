@@ -347,8 +347,14 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
 // Rides in this same .kt file so mob_dev's single-`bridge_kt` copy delivers it.
 // The OS creates it from the AndroidManifest <service> declaration (see the
 // plugin host_requirements); it serves the NFC Forum Type-4 Tag command set
-// (SELECT AID / SELECT CC / SELECT NDEF / READ BINARY) over the NDEF app AID
-// D2760000850101, presenting MobNfcBridge.emulatedNdef as a read-only tag.
+// (SELECT AID / SELECT CC / SELECT NDEF / READ BINARY / UPDATE BINARY) over the
+// NDEF app AID D2760000850101, presenting MobNfcBridge.emulatedNdef as a tag.
+//
+// This is a faithful mirror of the pure `MobNfc.Hce` Elixir module
+// (lib/mob_nfc/hce.ex), which is the TESTED reference for this state machine
+// (test/hce_test.exs) — a HostApduService must answer readers even when the
+// BEAM isn't running, so it can't delegate there at runtime. Keep the two in
+// sync: same CC bytes, same SELECT/READ/UPDATE handling, same completion rule.
 class MobNfcApduService : HostApduService() {
   // 0 = none selected, 1 = Capability Container (E103), 2 = NDEF file (E104).
   private var selectedFile = 0
