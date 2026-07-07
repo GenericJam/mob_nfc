@@ -23,6 +23,71 @@ defmodule MobNfcTest do
     end
   end
 
+  describe "reading_json/1 (start_reading transport)" do
+    test "defaults to ndef mode with the default alert" do
+      j = Jason.decode!(MobNfc.reading_json([]))
+      assert j["mode"] == "ndef"
+      assert j["alert"] == "Hold your phone near an NFC tag"
+    end
+
+    test ":mode :tag maps to \"tag\"; anything else is \"ndef\"" do
+      assert Jason.decode!(MobNfc.reading_json(mode: :tag))["mode"] == "tag"
+      assert Jason.decode!(MobNfc.reading_json(mode: :ndef))["mode"] == "ndef"
+      assert Jason.decode!(MobNfc.reading_json([]))["mode"] == "ndef"
+    end
+
+    test "honours a custom alert" do
+      assert Jason.decode!(MobNfc.reading_json(alert: "hi"))["alert"] == "hi"
+    end
+  end
+
+  describe "writing_json/2 (write_ndef transport)" do
+    test "base64-encodes record content and round-trips through the parser" do
+      j = Jason.decode!(MobNfc.writing_json(MobNfc.Ndef.uri_record("https://mob.dev"), []))
+      [rec] = j["ndef"] |> Base.decode64!() |> MobNfc.Ndef.parse()
+      assert MobNfc.Ndef.decode_uri(rec) == {:ok, "https://mob.dev"}
+    end
+
+    test "passes raw binary content through unchanged" do
+      raw = <<0xD1, 0x01, 0x01, ?T, 0x00>>
+      j = Jason.decode!(MobNfc.writing_json(raw, []))
+      assert Base.decode64!(j["ndef"]) == raw
+    end
+
+    test "carries the alert" do
+      assert Jason.decode!(MobNfc.writing_json("", alert: "tap"))["alert"] == "tap"
+    end
+  end
+
+  describe "emulation_json/2 (emulate_ndef transport)" do
+    test "defaults to non-writable" do
+      assert Jason.decode!(MobNfc.emulation_json("", []))["writable"] == false
+    end
+
+    test "writable: true is carried through" do
+      assert Jason.decode!(MobNfc.emulation_json("", writable: true))["writable"] == true
+    end
+
+    test "only the literal true enables writable" do
+      assert Jason.decode!(MobNfc.emulation_json("", writable: :yes))["writable"] == false
+    end
+
+    test "encodes record content round-trippably" do
+      j = Jason.decode!(MobNfc.emulation_json(MobNfc.Ndef.text_record("hi"), writable: true))
+      [rec] = j["ndef"] |> Base.decode64!() |> MobNfc.Ndef.parse()
+      assert MobNfc.Ndef.decode_text(rec) == {:ok, %{text: "hi", lang: "en"}}
+    end
+  end
+
+  describe "to_ndef_bytes/1" do
+    test "binary passes through; records are encoded" do
+      assert MobNfc.to_ndef_bytes(<<1, 2, 3>>) == <<1, 2, 3>>
+
+      assert MobNfc.to_ndef_bytes(MobNfc.Ndef.text_record("x")) ==
+               MobNfc.Ndef.encode(MobNfc.Ndef.text_record("x"))
+    end
+  end
+
   describe "plugin manifest" do
     @manifest Code.eval_file("priv/mob_plugin.exs") |> elem(0)
 
@@ -44,6 +109,14 @@ defmodule MobNfcTest do
       reqs = Enum.join(@manifest.host_requirements, "\n")
       assert reqs =~ "com.apple.developer.nfc.readersession.formats"
       assert reqs =~ "android.hardware.nfc"
+    end
+
+    test "surfaces the raw-tag AID list and HCE service as host_requirements" do
+      reqs = Enum.join(@manifest.host_requirements, "\n")
+      # iOS raw-tag mode select-identifiers (MOB-38) + HCE service/res (MOB-39)
+      assert reqs =~ "select-identifiers"
+      assert reqs =~ "MobNfcApduService"
+      assert reqs =~ "HOST_APDU_SERVICE"
     end
 
     test "bridge class + jni source are wired for Android" do

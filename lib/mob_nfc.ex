@@ -106,12 +106,19 @@ defmodule MobNfc do
     if Platform.unsupported?(Platform.current()) do
       send(self(), {:nfc, :error, :unsupported})
     else
-      alert = Keyword.get(opts, :alert, "Hold your phone near an NFC tag")
-      mode = if Keyword.get(opts, :mode) == :tag, do: "tag", else: "ndef"
-      :mob_nfc_nif.nfc_start_reading(Jason.encode!(%{alert: alert, mode: mode}))
+      :mob_nfc_nif.nfc_start_reading(reading_json(opts))
     end
 
     socket
+  end
+
+  @doc false
+  # Pure: the opts JSON handed to the read NIF. Public for testing (the NIF
+  # path can't run off-device, so the transport shape is asserted here instead).
+  def reading_json(opts) do
+    alert = Keyword.get(opts, :alert, "Hold your phone near an NFC tag")
+    mode = if Keyword.get(opts, :mode) == :tag, do: "tag", else: "ndef"
+    Jason.encode!(%{alert: alert, mode: mode})
   end
 
   @doc """
@@ -142,13 +149,17 @@ defmodule MobNfc do
     if Platform.unsupported?(Platform.current()) do
       send(self(), {:nfc, :error, :unsupported})
     else
-      bytes = if is_binary(content), do: content, else: MobNfc.Ndef.encode(content)
-      alert = Keyword.get(opts, :alert, "Hold your phone near a writable NFC tag")
-      json = Jason.encode!(%{alert: alert, ndef: Base.encode64(bytes)})
-      :mob_nfc_nif.nfc_start_writing(json)
+      :mob_nfc_nif.nfc_start_writing(writing_json(content, opts))
     end
 
     socket
+  end
+
+  @doc false
+  # Pure: the opts JSON handed to the write NIF. Public for testing.
+  def writing_json(content, opts) do
+    alert = Keyword.get(opts, :alert, "Hold your phone near a writable NFC tag")
+    Jason.encode!(%{alert: alert, ndef: Base.encode64(to_ndef_bytes(content))})
   end
 
   @doc "Stop the reader session started by the calling process."
@@ -200,16 +211,23 @@ defmodule MobNfc do
         send(self(), {:nfc, :error, :unsupported})
 
       _ ->
-        bytes = if is_binary(content), do: content, else: MobNfc.Ndef.encode(content)
-        writable = Keyword.get(opts, :writable, false) == true
-
-        :mob_nfc_nif.nfc_emulate_ndef(
-          Jason.encode!(%{ndef: Base.encode64(bytes), writable: writable})
-        )
+        :mob_nfc_nif.nfc_emulate_ndef(emulation_json(content, opts))
     end
 
     socket
   end
+
+  @doc false
+  # Pure: the opts JSON handed to the emulate NIF. Public for testing.
+  def emulation_json(content, opts) do
+    writable = Keyword.get(opts, :writable, false) == true
+    Jason.encode!(%{ndef: Base.encode64(to_ndef_bytes(content)), writable: writable})
+  end
+
+  @doc false
+  # Content is either raw NDEF bytes or record(s) to encode.
+  def to_ndef_bytes(content) when is_binary(content), do: content
+  def to_ndef_bytes(content), do: MobNfc.Ndef.encode(content)
 
   @doc "Stop tag emulation started by `emulate_ndef/3`. Android only; no-op elsewhere."
   @spec stop_emulation(Mob.Socket.t()) :: Mob.Socket.t()
