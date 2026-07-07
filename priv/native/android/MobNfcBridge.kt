@@ -187,6 +187,18 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
           nativeDeliverNfcError(pid, "bad_payload")
           return
         }
+    // Reader mode and card emulation are mutually exclusive on one NFC
+    // controller — if a reader session is active (e.g. auto-armed on mount),
+    // drop it so the phone presents purely as an emulated card.
+    val act = activity()
+    val a = adapter
+    if (act != null && a != null) {
+      act.runOnUiThread {
+        try {
+          a.disableReaderMode(act)
+        } catch (_: Throwable) {}
+      }
+    }
     emulatedNdef = bytes
     emulationWritable = obj.optBoolean("writable", false)
     emulationPid = pid
