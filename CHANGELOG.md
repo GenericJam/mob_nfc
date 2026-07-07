@@ -9,8 +9,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [0.1.0] - unreleased
 
 ### Added
-- Initial release: **NDEF tag reading**. `MobNfc.start_reading/2` /
-  `stop_reading/1` open a reader session; NDEF records and tag events arrive as
-  `{:nfc, ...}` messages. `MobNfc.available?/0` reports radio presence + enabled
-  state. iOS `CoreNFC` (`NFCNDEFReaderSession`); Android `NfcAdapter` reader
-  mode. (MOB-16)
+- Initial release: on-device **NFC** for Mob apps. (MOB-16)
+  - **Read** NDEF messages — `MobNfc.start_reading/2` / `stop_reading/1` open a
+    reader session; NDEF and tag events arrive as `{:nfc, ...}` messages.
+    `MobNfc.available?/0` reports radio presence + enabled state.
+  - **Raw tag UIDs** — `start_reading/2` with `mode: :tag` reads a tag's UID/tech
+    without NDEF (iOS `NFCTagReaderSession`).
+  - **Write** NDEF — `MobNfc.write_ndef/3` writes an NDEF message to a tag.
+  - **Card emulation (HCE)** — `MobNfc.emulate_ndef/3` / `stop_emulation/1`
+    emulate an NDEF tag (read-only or `:writable`) via Android `HostApduService`.
+    **Android only** (iOS has no third-party HCE; it replies `:unsupported`).
+  - iOS `CoreNFC`; Android `NfcAdapter` reader mode + HCE. NDEF parse/encode and
+    Text/URI helpers in `MobNfc.Ndef`.

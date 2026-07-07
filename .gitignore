@@ -20,7 +20,7 @@ erl_crash.dump
 *.ez
 
 # Ignore package tarball (built via "mix hex.build").
-mob_bluetooth-*.tar
+mob_nfc-*.tar
 
 # Signature is regenerated fresh in CI on every release (never committed,
 # so it can't go stale). The .pub IS committed.

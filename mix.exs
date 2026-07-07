@@ -34,11 +34,11 @@ defmodule MobNfc.MixProject do
   end
 
   defp deps do
-    # Local path deps while the plugin system is dogfooded; switch :mob to the
-    # Hex constraint when appropriate. :mob_dev is test-only and never ships.
+    # :mob is the runtime dep; :mob_dev is test-only (manifest validators) and
+    # never ships. Both from Hex so the package builds off this machine + in CI.
     [
-      {:mob, path: "/Users/kevin/code/mob/.claude/worktrees/MOB-16-nfc"},
-      {:mob_dev, path: "/Users/kevin/code/mob_dev", only: [:dev, :test], runtime: false},
+      {:mob, "~> 0.7"},
+      {:mob_dev, "~> 0.6", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4.2", only: [:dev, :test], runtime: false},
