@@ -338,6 +338,14 @@ static NFCNDEFMessage *mob_bytes_to_ndef_message(NSData *data) {
   nfc_send_simple(&_pid, "session_started");
 }
 
+// Required by the protocol but never called: implementing didDetectTags: makes
+// CoreNFC route to tags instead of NDEF messages. Kept as an empty stub.
+- (void)readerSession:(NFCNDEFReaderSession *)session
+       didDetectNDEFs:(NSArray<NFCNDEFMessage *> *)messages {
+  (void)session;
+  (void)messages;
+}
+
 - (void)readerSession:(NFCNDEFReaderSession *)session
         didDetectTags:(NSArray<__kindof id<NFCNDEFTag>> *)tags {
   id<NFCNDEFTag> tag = tags.firstObject;
@@ -354,8 +362,9 @@ static NFCNDEFMessage *mob_bytes_to_ndef_message(NSData *data) {
           [session invalidateSessionWithErrorMessage:@"Connection failed"];
           return;
         }
-        [tag queryNDEFStatus:^(NFCNDEFStatus status, NSUInteger capacity,
-                               NSError *qErr) {
+        [tag queryNDEFStatusWithCompletionHandler:^(NFCNDEFStatus status,
+                                                    NSUInteger capacity,
+                                                    NSError *qErr) {
           if (qErr || status == NFCNDEFStatusNotSupported) {
             nfc_send_reason(&pid, "error", "not_ndef");
             [session invalidateSessionWithErrorMessage:@"Not an NDEF tag"];
