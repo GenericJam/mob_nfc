@@ -1,8 +1,10 @@
 # mob_nfc plugin manifest.
 #
-# NFC — NDEF tag read/write. iOS CoreNFC (NFCNDEFReaderSession, iPhone 7+);
-# Android NfcAdapter reader mode (enableReaderMode). Card emulation (HCE) is a
-# future addition, not in this manifest.
+# NFC — NDEF tag read/write + Android Host Card Emulation. iOS CoreNFC
+# (NFCNDEFReaderSession + NFCTagReaderSession, iPhone 7+); Android NfcAdapter
+# reader mode (enableReaderMode) + HostApduService (HCE, Android-only). The HCE
+# service class rides in MobNfcBridge.kt but its AndroidManifest <service> +
+# res/xml can't be plugin-contributed yet (MOB-39) — see host_requirements.
 #
 # The iOS entitlement (com.apple.developer.nfc.readersession.formats) can NOT be
 # contributed by a plugin today — mob_dev has no entitlement-merge path (see
@@ -69,6 +71,22 @@
       "    <array><string>D2760000850101</string> <!-- NFC Forum Type 4 (NDEF) -->\n" <>
       "           <string>325041592E5359532E4444463031</string> <!-- PPSE --></array>\n" <>
       "  Add the specific AIDs of the ISO7816 tags you intend to read. iOS blocks " <>
-      "EMV payment cards regardless (reserved for the Secure Element)."
+      "EMV payment cards regardless (reserved for the Secure Element).",
+    "Android HCE (emulate_ndef/3): mob_dev can't contribute an AndroidManifest " <>
+      "<service> or res/xml yet (MOB-39), so add by hand.\n" <>
+      "  1. android/app/src/main/res/xml/mob_nfc_apduservice.xml:\n" <>
+      "     <host-apdu-service xmlns:android=\"http://schemas.android.com/apk/res/android\"\n" <>
+      "         android:description=\"@string/app_name\" android:requireDeviceUnlock=\"false\">\n" <>
+      "       <aid-group android:category=\"other\" android:description=\"@string/app_name\">\n" <>
+      "         <aid-filter android:name=\"D2760000850101\"/> <!-- NFC Forum Type 4 (NDEF) -->\n" <>
+      "       </aid-group>\n" <>
+      "     </host-apdu-service>\n" <>
+      "  2. In AndroidManifest.xml <application>:\n" <>
+      "     <service android:name=\"io.mob.nfc.MobNfcApduService\" android:exported=\"true\"\n" <>
+      "         android:permission=\"android.permission.BIND_NFC_SERVICE\">\n" <>
+      "       <intent-filter><action android:name=\"android.nfc.cardemulation.action.HOST_APDU_SERVICE\"/></intent-filter>\n" <>
+      "       <meta-data android:name=\"android.nfc.cardemulation.host_apdu_service\"\n" <>
+      "           android:resource=\"@xml/mob_nfc_apduservice\"/>\n" <>
+      "     </service>"
   ]
 }

@@ -29,6 +29,8 @@ const NfcMethods = struct {
     start_reading: jni.JMethodID = null,
     start_writing: jni.JMethodID = null,
     stop_reading: jni.JMethodID = null,
+    emulate_ndef: jni.JMethodID = null,
+    stop_emulation: jni.JMethodID = null,
 };
 var g_nfc: NfcMethods = .{};
 var g_nfc_cls: jni.JClass = null;
@@ -40,6 +42,8 @@ export fn Java_io_mob_nfc_MobNfcBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jn
     g_nfc.start_reading = jni.getStaticMethodID(jenv, cls, "nfc_start_reading", "(JLjava/lang/String;)V");
     g_nfc.start_writing = jni.getStaticMethodID(jenv, cls, "nfc_start_writing", "(JLjava/lang/String;)V");
     g_nfc.stop_reading = jni.getStaticMethodID(jenv, cls, "nfc_stop_reading", "(J)V");
+    g_nfc.emulate_ndef = jni.getStaticMethodID(jenv, cls, "nfc_emulate_ndef", "(JLjava/lang/String;)V");
+    g_nfc.stop_emulation = jni.getStaticMethodID(jenv, cls, "nfc_stop_emulation", "(J)V");
 }
 
 // ── helpers ──
@@ -159,6 +163,33 @@ export fn nif_nfc_stop_reading(
     return erts.ok(env);
 }
 
+export fn nif_nfc_emulate_ndef(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    if (g_nfc.emulate_ndef == null) return nfcUnsupported(env);
+    return startWithJson(env, argv, g_nfc.emulate_ndef);
+}
+
+export fn nif_nfc_stop_emulation(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    _ = argv;
+    if (g_nfc.stop_emulation == null) return nfcUnsupported(env);
+    var pid: erts.ErlNifPid = undefined;
+    _ = erts.enif_self(env, &pid);
+    var attached: c_int = 0;
+    const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
+    defer detachIfAttached(attached);
+    jenv.*.CallStaticVoidMethod.?(jenv, g_nfc_cls, g_nfc.stop_emulation, pidToJlong(pid));
+    return erts.ok(env);
+}
+
 // ── deliveries (called from mob_nfc_jni.c thunks) ──
 pub export fn mob_deliver_nfc_session_started(pid_long: jni.JLong) callconv(.c) void {
     var pid = pidFromLong(pid_long);
@@ -242,6 +273,27 @@ pub export fn mob_deliver_nfc_error(pid_long: jni.JLong, reason: ?[*:0]const u8)
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
+// Simple `{:nfc, <event>}` sender for the HCE lifecycle events.
+fn deliverSimple(pid_long: jni.JLong, event: [*:0]const u8) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{ erts.atom(env, "nfc"), erts.enif_make_atom(env, event) });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+pub export fn mob_deliver_nfc_emulation_started(pid_long: jni.JLong) callconv(.c) void {
+    deliverSimple(pid_long, "emulation_started");
+}
+
+pub export fn mob_deliver_nfc_emulation_stopped(pid_long: jni.JLong) callconv(.c) void {
+    deliverSimple(pid_long, "emulation_stopped");
+}
+
+pub export fn mob_deliver_nfc_hce_read(pid_long: jni.JLong) callconv(.c) void {
+    deliverSimple(pid_long, "hce_read");
+}
+
 // ── NIF table + init entry point ─────────────────────────────────────────
 fn nifLoad(env: ?*erts.ErlNifEnv, priv: *?*anyopaque, info: erts.ERL_NIF_TERM) callconv(.c) c_int {
     _ = env;
@@ -255,6 +307,8 @@ const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "nfc_start_reading", .arity = 1, .fptr = nif_nfc_start_reading, .flags = 0 },
     .{ .name = "nfc_start_writing", .arity = 1, .fptr = nif_nfc_start_writing, .flags = 0 },
     .{ .name = "nfc_stop_reading", .arity = 0, .fptr = nif_nfc_stop_reading, .flags = 0 },
+    .{ .name = "nfc_emulate_ndef", .arity = 1, .fptr = nif_nfc_emulate_ndef, .flags = 0 },
+    .{ .name = "nfc_stop_emulation", .arity = 0, .fptr = nif_nfc_stop_emulation, .flags = 0 },
 };
 
 var nif_entry: erts.ErlNifEntry = .{

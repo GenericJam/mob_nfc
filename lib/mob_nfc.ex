@@ -160,4 +160,53 @@ defmodule MobNfc do
 
     socket
   end
+
+  @doc """
+  Emulate an NDEF tag (Host Card Emulation) — make this phone read like an NFC
+  tag serving `content` to any nearby reader. **Android only.**
+
+  `content` is raw NDEF bytes or record(s) (encoded via `MobNfc.Ndef.encode/1`),
+  the same as `write_ndef/3`. The phone advertises an NFC Forum Type-4 tag over
+  the NDEF application AID `D2760000850101`; a reader (another phone, an NFC
+  reader, an iPhone running `start_reading/2`) sees a normal read-only NDEF tag.
+
+      MobNfc.emulate_ndef(socket, MobNfc.Ndef.uri_record("https://mob.dev"))
+
+  iOS has no third-party HCE API (the Secure Element is reserved), so this sends
+  `{:nfc, :error, :unsupported}` there. Events:
+
+      {:nfc, :emulation_started}
+      {:nfc, :hce_read}            # a reader read the emulated tag
+      {:nfc, :emulation_stopped}
+
+  Requires the `HostApduService` + `res/xml` + AndroidManifest `<service>` the
+  plugin `host_requirements` describe (mob_dev can't contribute those yet).
+  """
+  @spec emulate_ndef(Mob.Socket.t(), binary() | map() | [map()], keyword()) :: Mob.Socket.t()
+  def emulate_ndef(socket, content, _opts \\ []) do
+    case Platform.current() do
+      :host ->
+        send(self(), {:nfc, :error, :unsupported})
+
+      :ios ->
+        send(self(), {:nfc, :error, :unsupported})
+
+      _ ->
+        bytes = if is_binary(content), do: content, else: MobNfc.Ndef.encode(content)
+        :mob_nfc_nif.nfc_emulate_ndef(Jason.encode!(%{ndef: Base.encode64(bytes)}))
+    end
+
+    socket
+  end
+
+  @doc "Stop tag emulation started by `emulate_ndef/3`. Android only; no-op elsewhere."
+  @spec stop_emulation(Mob.Socket.t()) :: Mob.Socket.t()
+  def stop_emulation(socket) do
+    case Platform.current() do
+      p when p in [:host, :ios] -> :ok
+      _ -> :mob_nfc_nif.nfc_stop_emulation()
+    end
+
+    socket
+  end
 end

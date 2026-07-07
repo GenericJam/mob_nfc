@@ -21,8 +21,10 @@ import android.app.Activity
 import android.nfc.NdefMessage
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.cardemulation.HostApduService
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
+import android.os.Bundle
 import java.lang.ref.WeakReference
 
 object MobNfcBridge : io.mob.plugin.MobActivityAware {
@@ -51,6 +53,12 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
 
   // Set while a write session is armed; the next tapped tag is written, not read.
   @Volatile private var pendingWrite: ByteArray? = null
+
+  // HCE state (read by MobNfcApduService, which the OS instantiates separately).
+  // `emulatedNdef` is the raw NDEF message the emulated tag serves; null = not
+  // emulating. `emulationPid` is the BEAM process to notify on a reader read.
+  @Volatile @JvmStatic var emulatedNdef: ByteArray? = null
+  @Volatile private var emulationPid: Long = 0
 
   // ── Static methods the NIF calls (signatures cached by nativeRegister) ───
 
@@ -159,6 +167,37 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
     }
   }
 
+  /** Begin emulating an NDEF tag serving `optsJson.ndef` (base64). */
+  @JvmStatic
+  fun nfc_emulate_ndef(pid: Long, optsJson: String?) {
+    val bytes =
+        try {
+          val obj = org.json.JSONObject(optsJson ?: "{}")
+          android.util.Base64.decode(obj.optString("ndef", ""), android.util.Base64.DEFAULT)
+        } catch (_: Throwable) {
+          nativeDeliverNfcError(pid, "bad_payload")
+          return
+        }
+    emulatedNdef = bytes
+    emulationPid = pid
+    nativeDeliverNfcEmulationStarted(pid)
+  }
+
+  /** Stop emulating. */
+  @JvmStatic
+  fun nfc_stop_emulation(pid: Long) {
+    emulatedNdef = null
+    emulationPid = 0
+    nativeDeliverNfcEmulationStopped(pid)
+  }
+
+  // Called by MobNfcApduService when a reader has read the emulated NDEF file.
+  @JvmStatic
+  fun onHceRead() {
+    val pid = emulationPid
+    if (pid != 0L) nativeDeliverNfcHceRead(pid)
+  }
+
   // Reader callback (binder thread): write if a write session is armed,
   // otherwise read NDEF if present, else report the tag.
   private fun onTag(pid: Long, tag: Tag) {
@@ -261,4 +300,97 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   @JvmStatic external fun nativeDeliverNfcSessionEnded(pid: Long, reason: String)
 
   @JvmStatic external fun nativeDeliverNfcError(pid: Long, reason: String)
+
+  @JvmStatic external fun nativeDeliverNfcEmulationStarted(pid: Long)
+
+  @JvmStatic external fun nativeDeliverNfcEmulationStopped(pid: Long)
+
+  @JvmStatic external fun nativeDeliverNfcHceRead(pid: Long)
+}
+
+// ── Host Card Emulation service (OS-instantiated, NOT via the bootstrap) ──────
+//
+// Rides in this same .kt file so mob_dev's single-`bridge_kt` copy delivers it.
+// The OS creates it from the AndroidManifest <service> declaration (see the
+// plugin host_requirements); it serves the NFC Forum Type-4 Tag command set
+// (SELECT AID / SELECT CC / SELECT NDEF / READ BINARY) over the NDEF app AID
+// D2760000850101, presenting MobNfcBridge.emulatedNdef as a read-only tag.
+class MobNfcApduService : HostApduService() {
+  // 0 = none selected, 1 = Capability Container (E103), 2 = NDEF file (E104).
+  private var selectedFile = 0
+
+  override fun processCommandApdu(apdu: ByteArray?, extras: Bundle?): ByteArray {
+    if (apdu == null || apdu.size < 4) return SW_ERROR
+    val ins = apdu[1].toInt() and 0xFF
+
+    // SELECT (00 A4 ...)
+    if (apdu[0].toInt() and 0xFF == 0x00 && ins == 0xA4) {
+      val p1 = apdu[2].toInt() and 0xFF
+      return when (p1) {
+        // SELECT by name (AID) — the NDEF Tag Application.
+        0x04 -> {
+          selectedFile = 0
+          SW_OK
+        }
+        // SELECT by file id (P1=00, P2=0C, Lc=02, file id follows).
+        0x00 -> {
+          if (apdu.size < 7) return SW_ERROR
+          val fid = ((apdu[5].toInt() and 0xFF) shl 8) or (apdu[6].toInt() and 0xFF)
+          selectedFile =
+              when (fid) {
+                0xE103 -> 1
+                0xE104 -> 2
+                else -> 0
+              }
+          if (selectedFile != 0) SW_OK else SW_FILE_NOT_FOUND
+        }
+        else -> SW_ERROR
+      }
+    }
+
+    // READ BINARY (00 B0 <off_hi> <off_lo> <le>)
+    if (apdu[0].toInt() and 0xFF == 0x00 && ins == 0xB0) {
+      val offset = ((apdu[2].toInt() and 0xFF) shl 8) or (apdu[3].toInt() and 0xFF)
+      val le = if (apdu.size >= 5) apdu[4].toInt() and 0xFF else 0
+      val file =
+          when (selectedFile) {
+            1 -> capabilityContainer()
+            2 -> ndefFile()
+            else -> return SW_FILE_NOT_FOUND
+          }
+      if (offset > file.size) return SW_ERROR
+      val end = minOf(offset + le, file.size)
+      val slice = file.copyOfRange(offset, end)
+      // Notify once the NDEF file has been read to its end.
+      if (selectedFile == 2 && end >= file.size) MobNfcBridge.onHceRead()
+      return slice + SW_OK
+    }
+
+    return SW_INS_NOT_SUPPORTED
+  }
+
+  override fun onDeactivated(reason: Int) {
+    selectedFile = 0
+  }
+
+  // NDEF file = 2-byte NLEN (message length) + the NDEF message.
+  private fun ndefFile(): ByteArray {
+    val msg = MobNfcBridge.emulatedNdef ?: ByteArray(0)
+    val nlen = msg.size
+    return byteArrayOf((nlen shr 8).toByte(), (nlen and 0xFF).toByte()) + msg
+  }
+
+  // Capability Container: CCLEN=000F, ver=2.0, MLe=00FB, MLc=00FF, then the
+  // NDEF File Control TLV (T=04 L=06 fid=E104 maxsize=0400 read=00 write=FF/RO).
+  private fun capabilityContainer(): ByteArray =
+      byteArrayOf(
+          0x00, 0x0F, 0x20, 0x00, 0xFB.toByte(), 0x00, 0xFF.toByte(),
+          0x04, 0x06, 0xE1.toByte(), 0x04, 0x04, 0x00, 0x00, 0xFF.toByte())
+
+  companion object {
+    private val SW_OK = byteArrayOf(0x90.toByte(), 0x00)
+    private val SW_FILE_NOT_FOUND = byteArrayOf(0x6A, 0x82.toByte())
+    private val SW_INS_NOT_SUPPORTED = byteArrayOf(0x6D, 0x00)
+    private val SW_ERROR = byteArrayOf(0x6F, 0x00)
+  }
 }

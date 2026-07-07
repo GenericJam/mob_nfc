@@ -14,7 +14,9 @@
     nfc_available/0,
     nfc_start_reading/1,
     nfc_start_writing/1,
-    nfc_stop_reading/0
+    nfc_stop_reading/0,
+    nfc_emulate_ndef/1,
+    nfc_stop_emulation/0
 ]).
 -on_load(init/0).
 
@@ -43,4 +45,14 @@ nfc_start_writing(_OptsJson) ->
 
 %% Stop the active reader session started by this process.
 nfc_stop_reading() ->
+    erlang:nif_error(nif_not_loaded).
+
+%% Emulate an NDEF tag (Android HCE). _OptsJson is `{"ndef":"<base64>"}`.
+%% Captures the caller; emulation_started/hce_read/emulation_stopped events
+%% flow back. Android only — the iOS side never registers this NIF.
+nfc_emulate_ndef(_OptsJson) ->
+    erlang:nif_error(nif_not_loaded).
+
+%% Stop tag emulation started by this process.
+nfc_stop_emulation() ->
     erlang:nif_error(nif_not_loaded).
