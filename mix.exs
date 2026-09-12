@@ -36,8 +36,13 @@ defmodule MobNfc.MixProject do
   defp deps do
     # :mob is the runtime dep; :mob_dev is test-only (manifest validators) and
     # never ships. Both from Hex so the package builds off this machine + in CI.
+    # :jason is a runtime dep — `Jason.encode!` is called from three write
+    # paths in `MobNfc` (MOB-80). It only worked before because the host app
+    # tended to already declare :jason transitively; a truly minimal host
+    # would fail to compile mob_nfc at runtime.
     [
       {:mob, "~> 0.7"},
+      {:jason, "~> 1.4"},
       {:mob_dev, "~> 0.6", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

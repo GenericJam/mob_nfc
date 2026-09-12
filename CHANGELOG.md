@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **`Jason` declared as a runtime dependency** (MOB-80). `MobNfc` uses
+  `Jason.encode!` on three write paths (write_ndef, hce_start, tag_emulate)
+  but the plugin's `mix.exs` never declared `:jason`. It only worked in
+  practice because most host apps declare `:jason` transitively; a minimal
+  host would fail at first invocation with `UndefinedFunctionError`.
+
+---
+
 ## [0.1.0] - unreleased
 
 ### Added
