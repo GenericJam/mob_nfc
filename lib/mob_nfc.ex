@@ -129,7 +129,7 @@ defmodule MobNfc do
   def reading_json(opts) do
     alert = Keyword.get(opts, :alert, "Hold your phone near an NFC tag")
     mode = if Keyword.get(opts, :mode) == :tag, do: "tag", else: "ndef"
-    Jason.encode!(%{alert: alert, mode: mode})
+    JSON.encode!(%{alert: alert, mode: mode})
   end
 
   @doc """
@@ -171,7 +171,7 @@ defmodule MobNfc do
   @spec writing_json(binary() | map() | [map()], keyword()) :: String.t()
   def writing_json(content, opts) do
     alert = Keyword.get(opts, :alert, "Hold your phone near a writable NFC tag")
-    Jason.encode!(%{alert: alert, ndef: Base.encode64(to_ndef_bytes(content))})
+    JSON.encode!(%{alert: alert, ndef: Base.encode64(to_ndef_bytes(content))})
   end
 
   @doc "Stop the reader session started by the calling process."
@@ -234,7 +234,7 @@ defmodule MobNfc do
   @spec emulation_json(binary() | map() | [map()], keyword()) :: String.t()
   def emulation_json(content, opts) do
     writable = Keyword.get(opts, :writable, false) == true
-    Jason.encode!(%{ndef: Base.encode64(to_ndef_bytes(content)), writable: writable})
+    JSON.encode!(%{ndef: Base.encode64(to_ndef_bytes(content)), writable: writable})
   end
 
   @doc false

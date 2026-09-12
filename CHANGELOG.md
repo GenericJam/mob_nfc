@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **`MobNfc.start_reading/2`, `write_ndef/3`, `emulate_ndef/3` no longer
+  crash with `UndefinedFunctionError (Jason.encode!/1)` in a consumer that
+  doesn't pull Jason transitively** (MOB-80). The three transport helpers
+  called `Jason.encode!` while `mix.exs` declared no `:jason` dep — Jason
+  was only present via dev/test tooling (credo, mob_dev). A regular Mob
+  app on `{:mob, "~> 0.7"} + {:mob_nfc, "~> 0.1"}` hit the exception on
+  the first call. Switched all three sites to the built-in `JSON` stdlib
+  (Elixir 1.18+, which mix.exs already targets); no runtime dep added.
+  A source-scanning lint test guards against regression.
+
 ## [0.1.0] - unreleased
 
 ### Added
