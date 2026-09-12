@@ -25,55 +25,55 @@ defmodule MobNfcTest do
 
   describe "reading_json/1 (start_reading transport)" do
     test "defaults to ndef mode with the default alert" do
-      j = Jason.decode!(MobNfc.reading_json([]))
+      j = JSON.decode!(MobNfc.reading_json([]))
       assert j["mode"] == "ndef"
       assert j["alert"] == "Hold your phone near an NFC tag"
     end
 
     test ":mode :tag maps to \"tag\"; anything else is \"ndef\"" do
-      assert Jason.decode!(MobNfc.reading_json(mode: :tag))["mode"] == "tag"
-      assert Jason.decode!(MobNfc.reading_json(mode: :ndef))["mode"] == "ndef"
-      assert Jason.decode!(MobNfc.reading_json([]))["mode"] == "ndef"
+      assert JSON.decode!(MobNfc.reading_json(mode: :tag))["mode"] == "tag"
+      assert JSON.decode!(MobNfc.reading_json(mode: :ndef))["mode"] == "ndef"
+      assert JSON.decode!(MobNfc.reading_json([]))["mode"] == "ndef"
     end
 
     test "honours a custom alert" do
-      assert Jason.decode!(MobNfc.reading_json(alert: "hi"))["alert"] == "hi"
+      assert JSON.decode!(MobNfc.reading_json(alert: "hi"))["alert"] == "hi"
     end
   end
 
   describe "writing_json/2 (write_ndef transport)" do
     test "base64-encodes record content and round-trips through the parser" do
-      j = Jason.decode!(MobNfc.writing_json(MobNfc.Ndef.uri_record("https://mob.dev"), []))
+      j = JSON.decode!(MobNfc.writing_json(MobNfc.Ndef.uri_record("https://mob.dev"), []))
       [rec] = j["ndef"] |> Base.decode64!() |> MobNfc.Ndef.parse()
       assert MobNfc.Ndef.decode_uri(rec) == {:ok, "https://mob.dev"}
     end
 
     test "passes raw binary content through unchanged" do
       raw = <<0xD1, 0x01, 0x01, ?T, 0x00>>
-      j = Jason.decode!(MobNfc.writing_json(raw, []))
+      j = JSON.decode!(MobNfc.writing_json(raw, []))
       assert Base.decode64!(j["ndef"]) == raw
     end
 
     test "carries the alert" do
-      assert Jason.decode!(MobNfc.writing_json("", alert: "tap"))["alert"] == "tap"
+      assert JSON.decode!(MobNfc.writing_json("", alert: "tap"))["alert"] == "tap"
     end
   end
 
   describe "emulation_json/2 (emulate_ndef transport)" do
     test "defaults to non-writable" do
-      assert Jason.decode!(MobNfc.emulation_json("", []))["writable"] == false
+      assert JSON.decode!(MobNfc.emulation_json("", []))["writable"] == false
     end
 
     test "writable: true is carried through" do
-      assert Jason.decode!(MobNfc.emulation_json("", writable: true))["writable"] == true
+      assert JSON.decode!(MobNfc.emulation_json("", writable: true))["writable"] == true
     end
 
     test "only the literal true enables writable" do
-      assert Jason.decode!(MobNfc.emulation_json("", writable: :yes))["writable"] == false
+      assert JSON.decode!(MobNfc.emulation_json("", writable: :yes))["writable"] == false
     end
 
     test "encodes record content round-trippably" do
-      j = Jason.decode!(MobNfc.emulation_json(MobNfc.Ndef.text_record("hi"), writable: true))
+      j = JSON.decode!(MobNfc.emulation_json(MobNfc.Ndef.text_record("hi"), writable: true))
       [rec] = j["ndef"] |> Base.decode64!() |> MobNfc.Ndef.parse()
       assert MobNfc.Ndef.decode_text(rec) == {:ok, %{text: "hi", lang: "en"}}
     end
@@ -135,6 +135,39 @@ defmodule MobNfcTest do
       assert @manifest.android.bridge_class == "io.mob.nfc.MobNfcBridge"
       assert @manifest.android.jni_source =~ "mob_nfc_jni.c"
       assert @manifest.android.bridge_kt =~ "MobNfcBridge.kt"
+    end
+  end
+
+  describe "MOB-80: no runtime dep on Jason" do
+    # `lib/` used to call `Jason.encode!` in three transport helpers while
+    # mix.exs declared no `:jason` dep. In a consumer that didn't pull Jason
+    # transitively (a plain mob app is one), the first call raised
+    # UndefinedFunctionError at runtime. Switched to the built-in `JSON`
+    # module (Elixir 1.18+, which mix.exs already targets). This test
+    # catches a re-introduction — if you genuinely need Jason, add
+    # `{:jason, "~> 1.4"}` to `deps/0` as a *runtime* (non-`:only`) dep and
+    # delete this test.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "no lib/ source references Jason at runtime" do
+      offenders =
+        Path.wildcard(Path.join([__DIR__, "..", "lib", "**", "*.ex"]))
+        |> Enum.flat_map(fn file ->
+          file
+          |> File.read!()
+          |> String.split("\n")
+          |> Enum.with_index(1)
+          |> Enum.filter(fn {line, _} ->
+            String.contains?(line, "Jason.") or String.contains?(line, "Jason,")
+          end)
+          |> Enum.map(fn {line, lineno} ->
+            "#{Path.relative_to_cwd(file)}:#{lineno}  #{String.trim(line)}"
+          end)
+        end)
+
+      assert offenders == [],
+             "MOB-80: lib/ references Jason at runtime; use the built-in JSON " <>
+               "stdlib (Elixir 1.18+) or add {:jason, \"~> 1.4\"} to mix.exs " <>
+               "deps/0 as a real runtime dep.\n\n" <> Enum.join(offenders, "\n")
     end
   end
 end
