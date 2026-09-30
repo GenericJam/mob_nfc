@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Android HCE now claims routing while the app is in the foreground**
+  (MOB-300). `emulate_ndef/3` calls
+  `CardEmulation.setPreferredService` for `io.mob.nfc.MobNfcApduService`
+  while the host activity is resumed, and `unsetPreferredService` on
+  `stop_emulation/1` and when the activity pauses (re-claimed on resume if
+  still emulating). Previously any other installed app registering the NDEF
+  AID `D2760000850101` competed for routing, so a reader tap could land in
+  Android's AID-conflict chooser. Skipped on devices without NFC/HCE; the
+  claim/release results are logged under the `MobNfc` logcat tag.
+
 ## [0.1.1] - 2026-09-30
 
 ### Fixed
