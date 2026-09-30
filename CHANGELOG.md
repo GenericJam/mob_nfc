@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.1.2] - 2026-09-30
 
 ### Fixed
 - **Android HCE now claims routing while the app is in the foreground**
