@@ -55,12 +55,12 @@
               <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
           </intent-filter>
           <meta-data android:name="android.nfc.cardemulation.host_apdu_service"
-              android:resource="@xml/mob_nfc_apduservice" />
+              android:resource="@xml/mob_nfc_hce_apduservice" />
       </service>
       """
     ],
     res_files: [
-      "priv/native/android/res/xml/mob_nfc_apduservice.xml",
+      "priv/native/android/res/xml/mob_nfc_hce_apduservice.xml",
       "priv/native/android/res/values/mob_nfc_strings.xml"
     ]
   },

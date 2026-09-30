@@ -210,8 +210,8 @@ defmodule MobNfc do
       message arrives as `{:nfc, :hce_written, %{ndef: bytes}}` and becomes what
       the tag subsequently serves. Defaults to `false` (read-only tag).
 
-  Requires the `HostApduService` + `res/xml` + AndroidManifest `<service>` the
-  plugin `host_requirements` describe (mob_dev can't contribute those yet).
+  On Android the `HostApduService` `<service>` and its `res/xml` AID filter
+  are contributed to the host app automatically by mob_dev (≥ 0.6.19).
   """
   @spec emulate_ndef(Mob.Socket.t(), binary() | map() | [map()], keyword()) :: Mob.Socket.t()
   def emulate_ndef(socket, content, opts \\ []) do

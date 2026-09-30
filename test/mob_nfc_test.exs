@@ -122,9 +122,48 @@ defmodule MobNfcTest do
       snippet = Enum.join(@manifest.android.manifest_application_snippets, "\n")
       assert snippet =~ "io.mob.nfc.MobNfcApduService"
       assert snippet =~ "HOST_APDU_SERVICE"
-      assert snippet =~ "@xml/mob_nfc_apduservice"
+      assert snippet =~ "@xml/mob_nfc_hce_apduservice"
 
-      assert "priv/native/android/res/xml/mob_nfc_apduservice.xml" in @manifest.android.res_files
+      assert "priv/native/android/res/xml/mob_nfc_hce_apduservice.xml" in @manifest.android.res_files
+    end
+
+    test "every @xml/@string resource the manifest snippets reference ships in res_files" do
+      snippet = Enum.join(@manifest.android.manifest_application_snippets, "\n")
+
+      shipped =
+        Enum.map(
+          @manifest.android.res_files,
+          &{Path.basename(Path.dirname(&1)), Path.rootname(Path.basename(&1)), &1}
+        )
+
+      xml_bodies = for {"xml", _, path} <- shipped, do: File.read!(path)
+      refs = Regex.scan(~r/@(xml|string)\/(\w+)/, Enum.join([snippet | xml_bodies], "\n"))
+      # The apduservice's android:description is a @string ref; guard the scan.
+      assert Enum.any?(refs, &match?([_, "string", _], &1))
+
+      for [_, kind, name] <- refs do
+        case kind do
+          "xml" ->
+            assert Enum.any?(shipped, fn {dir, base, path} ->
+                     dir == "xml" and base == name and File.exists?(path)
+                   end),
+                   "@xml/#{name} referenced but not shipped"
+
+          "string" ->
+            values = for {"values", _, path} <- shipped, do: File.read!(path)
+            assert Enum.any?(values, &(&1 =~ ~s(name="#{name}"))), "@string/#{name} not defined"
+        end
+      end
+    end
+
+    test "plugin res files never reuse the 0.1.0 host-owned apduservice path" do
+      # 0.1.0 told hosts to hand-create res/xml/mob_nfc_apduservice.xml; mob_dev
+      # refuses to overwrite host-owned files, so the plugin must not ship it.
+      refute Enum.any?(
+               @manifest.android.res_files,
+               &(Path.basename(&1) == "mob_nfc_apduservice.xml")
+             )
+
       assert "priv/native/android/res/values/mob_nfc_strings.xml" in @manifest.android.res_files
 
       # No longer a manual obligation.

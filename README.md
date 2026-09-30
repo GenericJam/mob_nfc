@@ -82,8 +82,8 @@ added by hand — the native build prints them as `host_requirements`:
 - **iOS raw-tag mode** (`mode: :tag`) needs an ISO7816 `select-identifiers` AID
   list in `ios/<app>.plist` (an array plist key mob_dev can't merge yet). iOS
   blocks EMV **payment** cards regardless (Secure Element).
-- **Android HCE** (`emulate_ndef/3`) needs a `<service>` +
-  `res/xml/…apduservice.xml` in the app (mob_dev can't contribute those yet).
+- **Android HCE** (`emulate_ndef/3`) — nothing to add: the `<service>` and
+  `res/xml/mob_nfc_hce_apduservice.xml` are contributed by mob_dev (≥ 0.6.19).
 - **Android** — add `<uses-feature android:name="android.hardware.nfc"
   android:required="false"/>` so NFC-less devices still install.
 

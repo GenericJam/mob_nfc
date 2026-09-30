@@ -346,7 +346,7 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
 //
 // Rides in this same .kt file so mob_dev's single-`bridge_kt` copy delivers it.
 // The OS creates it from the AndroidManifest <service> declaration (see the
-// plugin host_requirements); it serves the NFC Forum Type-4 Tag command set
+// plugin manifest's android.manifest_application_snippets); it serves the NFC Forum Type-4 Tag command set
 // (SELECT AID / SELECT CC / SELECT NDEF / READ BINARY / UPDATE BINARY) over the
 // NDEF app AID D2760000850101, presenting MobNfcBridge.emulatedNdef as a tag.
 //

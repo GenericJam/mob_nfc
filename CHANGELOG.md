@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.1.1] - 2026-09-30
 
 ### Fixed
 - **`MobNfc.start_reading/2`, `write_ndef/3`, `emulate_ndef/3` no longer
@@ -19,7 +19,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   (Elixir 1.18+, which mix.exs already targets); no runtime dep added.
   A source-scanning lint test guards against regression.
 
-## [0.1.0] - unreleased
+### Changed
+- **Android HCE is now turnkey** (MOB-39). The HCE `<service>`
+  (`io.mob.nfc.MobNfcApduService`) is contributed via
+  `android.manifest_application_snippets`, and the plugin ships its own
+  `res/xml/mob_nfc_hce_apduservice.xml` and `res/values/mob_nfc_strings.xml`
+  via `android.res_files` — no manual manifest/res edits. The service
+  description is now `@string/mob_nfc_hce_description` instead of
+  `@string/app_name`. The manual HCE `host_requirement` is removed.
+  Requires mob_dev ≥ 0.6.19; older mob_dev silently ignores these keys.
+  **Upgrading from 0.1.0 with HCE set up by hand:** delete the
+  `<service android:name="io.mob.nfc.MobNfcApduService">` block from
+  `android/app/src/main/AndroidManifest.xml` and the hand-created
+  `android/app/src/main/res/xml/mob_nfc_apduservice.xml`. mob_dev skips a
+  snippet whose `android:name` is already in the manifest, so if you keep
+  the hand-added `<service>` it keeps pointing at your old
+  `@xml/mob_nfc_apduservice` (still works, but the plugin's file is unused).
+  The plugin file was renamed so it never collides with the host-owned one.
+- **Re-signed with plugin envelope v2** (MOB-287). mob_dev 0.7.2+ verifies
+  this signature before evaluating the manifest. mob_dev 0.7.0 / 0.7.1 can't
+  read v2 signatures and report this release as `invalid signature` —
+  upgrade the host app to `{:mob_dev, "~> 0.7.2", only: :dev, runtime: false}`.
+
+## [0.1.0] - 2026-07-07
 
 ### Added
 - Initial release: on-device **NFC** for Mob apps. (MOB-16)
