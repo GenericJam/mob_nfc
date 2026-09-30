@@ -18,13 +18,18 @@
 package io.mob.nfc
 
 import android.app.Activity
+import android.app.Application
+import android.content.ComponentName
+import android.content.pm.PackageManager
 import android.nfc.NdefMessage
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.cardemulation.CardEmulation
 import android.nfc.cardemulation.HostApduService
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.os.Bundle
+import android.util.Log
 import java.lang.ref.WeakReference
 
 object MobNfcBridge : io.mob.plugin.MobActivityAware {
@@ -39,14 +44,103 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
 
   private var activityRef: WeakReference<Activity>? = null
 
+  // Tracked from the lifecycle callbacks below: CardEmulation's preferred-service
+  // calls throw unless the activity is resumed, and Activity.isResumed() is not
+  // public SDK.
+  @Volatile private var activityResumed = false
+  private var lifecycleRegistered = false
+
   // Not @JvmStatic: overrides MobActivityAware.setActivity (illegal to be
   // @JvmStatic on an interface override in an object). Called via instance
   // dispatch from the generated bootstrap.
   override fun setActivity(activity: Activity) {
     activityRef = WeakReference(activity)
+    activityResumed = false
+    // MobActivityAware only hands over the Activity (from onCreate), so pause/
+    // resume come from the Application. Registered once: a recreated activity
+    // calls setActivity again on the same Application.
+    if (!lifecycleRegistered) {
+      lifecycleRegistered = true
+      activity.application.registerActivityLifecycleCallbacks(lifecycleCallbacks)
+    }
   }
 
   private fun activity(): Activity? = activityRef?.get()
+
+  // While emulating, claim the HCE preferred service for as long as the
+  // activity is in the foreground (Android's documented onResume/onPause
+  // pattern). Without it, any other installed app registering the same NDEF AID
+  // (D2760000850101, category "other") competes for routing and a reader tap
+  // lands in the system AID-conflict chooser instead of MobNfcApduService.
+  private val lifecycleCallbacks =
+      object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityResumed(activity: Activity) {
+          if (activity !== activity()) return
+          activityResumed = true
+          if (emulatedNdef != null) claimPreferredService(activity)
+        }
+
+        override fun onActivityPaused(activity: Activity) {
+          if (activity !== activity()) return
+          // Still resumed here (dispatched from inside Activity.onPause), which
+          // unsetPreferredService requires.
+          releasePreferredService(activity)
+          activityResumed = false
+        }
+
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+
+        override fun onActivityStarted(activity: Activity) {}
+
+        override fun onActivityStopped(activity: Activity) {}
+
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+
+        override fun onActivityDestroyed(activity: Activity) {}
+      }
+
+  // Null on devices without NFC or without the HCE feature.
+  private fun cardEmulation(act: Activity): CardEmulation? {
+    if (!act.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC_HOST_CARD_EMULATION)) {
+      return null
+    }
+    val a = NfcAdapter.getDefaultAdapter(act) ?: return null
+    return try {
+      CardEmulation.getInstance(a)
+    } catch (_: UnsupportedOperationException) {
+      null
+    }
+  }
+
+  // Main-thread only. Set when setPreferredService succeeded, so the release
+  // runs even if stop_emulation cleared emulatedNdef before its UI post ran.
+  private var preferredClaimed = false
+
+  // Main thread, activity resumed.
+  private fun claimPreferredService(act: Activity) {
+    val ce = cardEmulation(act) ?: return
+    try {
+      preferredClaimed =
+          ce.setPreferredService(act, ComponentName(act, MobNfcApduService::class.java))
+      Log.i(TAG, "HCE setPreferredService -> $preferredClaimed")
+    } catch (e: RuntimeException) {
+      Log.w(TAG, "HCE setPreferredService failed", e)
+    }
+  }
+
+  // Main thread, activity resumed.
+  private fun releasePreferredService(act: Activity) {
+    if (!preferredClaimed) return
+    preferredClaimed = false
+    val ce = cardEmulation(act) ?: return
+    try {
+      Log.i(TAG, "HCE unsetPreferredService -> ${ce.unsetPreferredService(act)}")
+    } catch (e: RuntimeException) {
+      Log.w(TAG, "HCE unsetPreferredService failed", e)
+    }
+  }
+
+  private const val TAG = "MobNfc"
 
   // One reader session at a time in this cut.
   @Volatile private var adapter: NfcAdapter? = null
@@ -187,21 +281,30 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
           nativeDeliverNfcError(pid, "bad_payload")
           return
         }
-    // Reader mode and card emulation are mutually exclusive on one NFC
-    // controller — if a reader session is active (e.g. auto-armed on mount),
-    // drop it so the phone presents purely as an emulated card.
-    val act = activity()
-    val a = adapter
-    if (act != null && a != null) {
-      act.runOnUiThread {
-        try {
-          a.disableReaderMode(act)
-        } catch (_: Throwable) {}
-      }
-    }
     emulatedNdef = bytes
     emulationWritable = obj.optBoolean("writable", false)
     emulationPid = pid
+    val act = activity()
+    if (act != null) {
+      val a = adapter
+      act.runOnUiThread {
+        // Reader mode and card emulation are mutually exclusive on one NFC
+        // controller — if a reader session is active (e.g. auto-armed on
+        // mount), drop it so the phone presents purely as an emulated card.
+        if (a != null) {
+          try {
+            a.disableReaderMode(act)
+          } catch (_: Throwable) {}
+        }
+        // Decided from the CURRENT state on the main thread, not this call's:
+        // a later stop_emulation may already have cleared emulatedNdef, and a
+        // paused activity re-claims from onActivityResumed instead.
+        val current = activity()
+        if (current != null && emulatedNdef != null && activityResumed) {
+          claimPreferredService(current)
+        }
+      }
+    }
     nativeDeliverNfcEmulationStarted(pid)
   }
 
@@ -211,6 +314,17 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
     emulatedNdef = null
     emulationWritable = false
     emulationPid = 0
+    val act = activity()
+    if (act != null) {
+      act.runOnUiThread {
+        // A newer emulate_ndef may have started before this ran; its session
+        // owns the claim, so only release while emulation is still stopped.
+        val current = activity()
+        if (current != null && emulatedNdef == null && activityResumed) {
+          releasePreferredService(current)
+        }
+      }
+    }
     nativeDeliverNfcEmulationStopped(pid)
   }
 
