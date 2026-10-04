@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.3] - 2026-10-04
+
+### Changed
+- **Signed with the shared mob first-party plugin key** (MOB-390).
+  `priv/mob_plugin.pub` is now the key shared by the other first-party
+  `mob_*` plugins (fingerprint
+  `ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=`), the same key as the other
+  first-party plugins. Trust is still recorded per plugin name: map
+  `mob_nfc: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg="` in
+  `config :mob, :trusted_plugins` or run `mix mob.plugin.trust mob_nfc`. Hosts that
+  recorded the old per-repo fingerprint for 0.1.2 will get a key-rotation
+  error; re-run `mix mob.plugin.trust mob_nfc` or switch the entry to the
+  shared fingerprint.
+
 ## [0.1.2] - 2026-09-30
 
 ### Fixed
