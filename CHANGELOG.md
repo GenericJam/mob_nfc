@@ -16,8 +16,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   first-party plugins. Trust is still recorded per plugin name: map
   `mob_nfc: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg="` in
   `config :mob, :trusted_plugins` or run `mix mob.plugin.trust mob_nfc`. Hosts that
-  recorded the old per-repo fingerprint for 0.1.2 will see a key-rotation
-  warning; re-run `mix mob.plugin.trust mob_nfc` or switch the entry to the
+  recorded the old per-repo fingerprint for 0.1.2 will get a key-rotation
+  error; re-run `mix mob.plugin.trust mob_nfc` or switch the entry to the
   shared fingerprint.
 
 ## [0.1.2] - 2026-09-30
