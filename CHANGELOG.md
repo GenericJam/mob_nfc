@@ -15,21 +15,29 @@ Fixes from the Operator v1 release review (MOB-395).
   `res/xml/mob_nfc_hce_apduservice.xml` now declares
   `android:requireDeviceUnlock="true"` (was `"false"`).
 - **HCE emulation is foreground-only and is now stopped on background.**
-  When the host activity pauses (backgrounded, screen off) the emulated
-  payload is dropped, the preferred-service claim released,
-  `MobNfcApduService` refuses every APDU (`6A82`), and the owner receives
-  `{:nfc, :emulation_stopped}`. Previously only the routing preference was
-  released and the payload was retained and re-armed on resume. Apps that
-  want emulation back after resuming must call `MobNfc.emulate_ndef/3` again.
+  When the host activity pauses (backgrounded, screen off, a permission
+  prompt / dialog-style activity on top, an activity-recreating config change) the emulated payload is
+  dropped, the preferred-service claim released, `MobNfcApduService` refuses
+  every APDU (`6A82`), and the owner receives `{:nfc, :emulation_stopped}`.
+  Previously only the routing preference was released and the payload was
+  retained and re-armed on resume. Apps that want emulation back must call
+  `MobNfc.emulate_ndef/3` again, e.g. on `{:mob_device, :did_become_active}`.
+- An `emulate_ndef/3` call that passes the up-front checks (size, payload, an
+  attached activity) but then fails ends any emulation already running, and a
+  successful one from another process replaces it; the previous owner gets
+  `{:nfc, :emulation_stopped}` in both cases. Reader mode is dropped only once
+  emulation is actually live, so a failed emulate no longer kills a reader
+  session.
 
 ### Fixed
 - **`emulate_ndef/3` no longer claims success on hardware that can't
   emulate.** `{:nfc, :emulation_started}` is sent only when the device has
   `FEATURE_NFC_HOST_CARD_EMULATION`, the NFC adapter exists and is enabled,
   the activity is resumed, and `CardEmulation.setPreferredService` succeeded.
-  Otherwise exactly one error arrives instead: `{:nfc, :error, :unavailable}`
-  (no NFC / no HCE / app not in the foreground / routing refused) or
-  `{:nfc, :error, :disabled}` (NFC switched off), matching `start_reading/2`.
+  Otherwise one error arrives instead: `{:nfc, :error, :unavailable}`
+  (no NFC / no HCE / app not in the foreground / routing refused),
+  `{:nfc, :error, :disabled}` (NFC switched off), matching `start_reading/2`,
+  or `{:nfc, :error, :no_activity}` (no host activity attached yet).
 - **NDEF messages larger than the emulated file are rejected.** The emulated
   tag advertises a 1024-byte NDEF file including the 2-byte NLEN, so
   `emulate_ndef/3` now rejects messages over 1022 bytes with

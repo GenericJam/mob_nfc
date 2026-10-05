@@ -73,14 +73,19 @@ is a no-op on the simulator/emulator.
 - `{:nfc, :emulation_started}` arrives only when emulation is actually live:
   the device has the HCE feature, NFC is present and switched on, the app is in
   the foreground, and it was granted preferred-service routing. Otherwise you
-  get one `{:nfc, :error, :unavailable}` (or `:disabled` when NFC is off) — e.g.
-  on every emulator.
+  get one `{:nfc, :error, :unavailable}` (`:disabled` when NFC is off,
+  `:no_activity` before the activity attaches) — e.g. `:unavailable` on every
+  emulator.
 - The HCE service declares `requireDeviceUnlock="true"`: a locked phone never
   serves the tag.
-- When the app is backgrounded (activity paused, incl. screen off) emulation is
-  **stopped**: the payload is dropped, the service refuses all APDUs, and
-  `{:nfc, :emulation_stopped}` is delivered. Call `emulate_ndef/3` again after
-  resuming.
+- Whenever the activity pauses, emulation is **stopped**: the payload is
+  dropped, the service refuses all APDUs, and `{:nfc, :emulation_stopped}` is
+  delivered. That covers backgrounding and screen-off, and also a runtime
+  permission prompt or dialog-style activity on top. Nothing re-arms it
+  automatically — call `emulate_ndef/3` again on
+  `{:mob_device, :did_become_active}` (after `Mob.Device.subscribe([:app])`).
+  (Rotation doesn't pause a generated mob app; a config change that recreates
+  the activity stops emulation without a `:did_become_active`.)
 - The emulated tag advertises a 1024-byte NDEF file (incl. the 2-byte length),
   so messages over **1022 bytes** (`MobNfc.Hce.max_message_size/0`) are
   rejected with `{:nfc, :error, :too_large}`.
@@ -117,5 +122,5 @@ See the plugin manifest `host_requirements` for the exact XML snippets.
   APDU state machine; the Android `HostApduService` mirrors it (an HCE service
   must answer readers even when the BEAM is down, so it can't delegate at
   runtime).
-- 67 host tests cover the wire format, the API transport, and the HCE protocol;
+- Host tests cover the wire format, the API transport, and the HCE protocol;
   the native CoreNFC / `HostApduService` glue is verified on-device.

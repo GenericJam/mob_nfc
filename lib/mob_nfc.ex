@@ -203,16 +203,22 @@ defmodule MobNfc do
       {:nfc, :emulation_started}         # HCE is live and this app owns routing
       {:nfc, :hce_read}                  # a reader read the emulated tag
       {:nfc, :hce_written, %{ndef: bin}} # a reader wrote to it (`:writable` only)
-      {:nfc, :emulation_stopped}         # stop_emulation/1, or the app was backgrounded
+      {:nfc, :emulation_stopped}         # stopped: stop_emulation/1, app paused, or replaced
       {:nfc, :error, :too_large}         # message > MobNfc.Hce.max_message_size/0 (1022 bytes)
-      {:nfc, :error, :unavailable}       # no NFC / no HCE feature / routing not granted
+      {:nfc, :error, :unavailable}       # no NFC / no HCE feature / not foreground / routing refused
       {:nfc, :error, :disabled}          # NFC radio switched off in settings
+      {:nfc, :error, :no_activity}       # no host activity attached yet
 
   `:emulation_started` is only sent once emulation is actually live: the
   device has the HCE feature, the NFC adapter exists and is enabled, the app is
   in the foreground, and `CardEmulation.setPreferredService` succeeded.
-  Otherwise exactly one `{:nfc, :error, reason}` arrives and nothing is
-  emulated.
+  Otherwise one `{:nfc, :error, reason}` arrives and nothing is emulated. A
+  call that passes the up-front checks (size, payload, an attached activity)
+  but then fails also ends any emulation that was already running (its owner
+  gets `:emulation_stopped`). A call superseded by a later `emulate_ndef/3` or
+  `stop_emulation/1` before it took effect gets no reply of its own. A
+  successful call from another process replaces the running emulation, whose
+  owner gets `:emulation_stopped`.
 
   The emulated tag advertises a 1024-byte NDEF file (2 bytes of which are the
   length prefix), so `content` must encode to at most
@@ -231,13 +237,19 @@ defmodule MobNfc do
   On Android the `HostApduService` `<service>` and its `res/xml` AID filter
   are contributed to the host app automatically by mob_dev (≥ 0.6.19). The
   service declares `requireDeviceUnlock="true"`, so a locked phone never serves
-  the tag. Emulation lives only while the host activity is in the foreground:
-  while emulating, the app is the preferred HCE service
-  (`CardEmulation.setPreferredService`), and when the activity pauses
-  (backgrounded, screen off) emulation is **stopped** — the payload is dropped,
-  the preference released, the service refuses further APDUs, and
-  `{:nfc, :emulation_stopped}` is delivered. Call `emulate_ndef/3` again after
-  the app resumes to re-arm it.
+  the tag. Emulation lives only while the host activity is resumed: while
+  emulating, the app is the preferred HCE service
+  (`CardEmulation.setPreferredService`), and whenever the activity pauses
+  emulation is **stopped** — the payload is dropped, the preference released,
+  the service refuses further APDUs, and `{:nfc, :emulation_stopped}` is
+  delivered. Besides backgrounding and screen-off, that includes a runtime
+  permission prompt or other dialog-style activity on top. Nothing re-arms it
+  automatically: call `emulate_ndef/3` again on resume, e.g. after
+  `Mob.Device.subscribe([:app])`, on `{:mob_device, :did_become_active}`.
+  Rotation doesn't pause a generated mob app (its `MainActivity` handles
+  orientation in place); a configuration change that does recreate the
+  activity stops emulation too, and `Mob.Device` sends no
+  `:did_become_active` for that recreation.
   """
   @spec emulate_ndef(Mob.Socket.t(), binary() | map() | [map()], keyword()) :: Mob.Socket.t()
   def emulate_ndef(socket, content, opts \\ []) do
@@ -275,7 +287,13 @@ defmodule MobNfc do
   def to_ndef_bytes(content) when is_binary(content), do: content
   def to_ndef_bytes(content), do: MobNfc.Ndef.encode(content)
 
-  @doc "Stop tag emulation started by `emulate_ndef/3`. Android only; no-op elsewhere."
+  @doc """
+  Stop tag emulation started by `emulate_ndef/3`. Android only; no-op elsewhere.
+
+  Always acknowledged with `{:nfc, :emulation_stopped}` to the caller — even if
+  emulation had already stopped (e.g. the app was paused), so a second
+  `:emulation_stopped` is possible.
+  """
   @spec stop_emulation(Mob.Socket.t()) :: Mob.Socket.t()
   def stop_emulation(socket) do
     case Platform.current() do
