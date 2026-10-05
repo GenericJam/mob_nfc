@@ -31,6 +31,7 @@ import android.nfc.tech.NdefFormatable
 import android.os.Bundle
 import android.util.Log
 import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicInteger
 
 object MobNfcBridge : io.mob.plugin.MobActivityAware {
 
@@ -72,20 +73,31 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   // pattern). Without it, any other installed app registering the same NDEF AID
   // (D2760000850101, category "other") competes for routing and a reader tap
   // lands in the system AID-conflict chooser instead of MobNfcApduService.
+  //
+  // Emulation is foreground-only: when the activity pauses (backgrounded,
+  // screen off/locked) emulation is STOPPED, not suspended — the payload is
+  // dropped, the preference released, the service refuses further APDUs, and
+  // the owner gets {:nfc, :emulation_stopped}. Elixir re-arms on resume.
   private val lifecycleCallbacks =
       object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(activity: Activity) {
           if (activity !== activity()) return
           activityResumed = true
-          if (emulatedNdef != null) claimPreferredService(activity)
         }
 
         override fun onActivityPaused(activity: Activity) {
           if (activity !== activity()) return
+          val pid = emulationPid
+          val wasEmulating = emulatedNdef != null
+          clearEmulationState()
           // Still resumed here (dispatched from inside Activity.onPause), which
           // unsetPreferredService requires.
           releasePreferredService(activity)
           activityResumed = false
+          if (wasEmulating) {
+            Log.i(TAG, "HCE stopped: activity paused")
+            if (pid != 0L) nativeDeliverNfcEmulationStopped(pid)
+          }
         }
 
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
@@ -116,16 +128,18 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   // runs even if stop_emulation cleared emulatedNdef before its UI post ran.
   private var preferredClaimed = false
 
-  // Main thread, activity resumed.
-  private fun claimPreferredService(act: Activity) {
-    val ce = cardEmulation(act) ?: return
+  // Main thread, activity resumed. True when this app now owns HCE routing.
+  private fun claimPreferredService(act: Activity): Boolean {
+    val ce = cardEmulation(act) ?: return false
     try {
       preferredClaimed =
           ce.setPreferredService(act, ComponentName(act, MobNfcApduService::class.java))
       Log.i(TAG, "HCE setPreferredService -> $preferredClaimed")
     } catch (e: RuntimeException) {
+      preferredClaimed = false
       Log.w(TAG, "HCE setPreferredService failed", e)
     }
+    return preferredClaimed
   }
 
   // Main thread, activity resumed.
@@ -156,6 +170,22 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   @Volatile @JvmStatic var emulatedNdef: ByteArray? = null
   @Volatile @JvmStatic var emulationWritable: Boolean = false
   @Volatile private var emulationPid: Long = 0
+
+  // Bumped by every emulate_ndef / stop_emulation call so a queued main-thread
+  // emulation start can tell it was superseded before it ran.
+  private val emulationGen = AtomicInteger(0)
+
+  // Largest NDEF message the emulated tag can serve: MobNfcApduService's CC
+  // advertises a 1024-byte NDEF file, 2 bytes of which are NLEN. Mirrors
+  // MobNfc.Hce.max_message_size/0.
+  private const val MAX_NDEF_MESSAGE = 1022
+
+  // Drop everything the HCE service serves from. Safe from any thread.
+  private fun clearEmulationState() {
+    emulatedNdef = null
+    emulationWritable = false
+    emulationPid = 0
+  }
 
   // ── Static methods the NIF calls (signatures cached by nativeRegister) ───
 
@@ -264,7 +294,12 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
     }
   }
 
-  /** Begin emulating an NDEF tag serving `optsJson.ndef` (base64). */
+  /**
+   * Begin emulating an NDEF tag serving `optsJson.ndef` (base64). Emits
+   * emulation_started only once emulation is live (HCE feature, adapter
+   * present + enabled, activity resumed, preferred-service routing granted);
+   * otherwise exactly one error (too_large / no_activity / unavailable / disabled).
+   */
   @JvmStatic
   fun nfc_emulate_ndef(pid: Long, optsJson: String?) {
     val obj =
@@ -281,39 +316,72 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
           nativeDeliverNfcError(pid, "bad_payload")
           return
         }
-    emulatedNdef = bytes
-    emulationWritable = obj.optBoolean("writable", false)
-    emulationPid = pid
-    val act = activity()
-    if (act != null) {
-      val a = adapter
-      act.runOnUiThread {
-        // Reader mode and card emulation are mutually exclusive on one NFC
-        // controller — if a reader session is active (e.g. auto-armed on
-        // mount), drop it so the phone presents purely as an emulated card.
-        if (a != null) {
-          try {
-            a.disableReaderMode(act)
-          } catch (_: Throwable) {}
-        }
-        // Decided from the CURRENT state on the main thread, not this call's:
-        // a later stop_emulation may already have cleared emulatedNdef, and a
-        // paused activity re-claims from onActivityResumed instead.
-        val current = activity()
-        if (current != null && emulatedNdef != null && activityResumed) {
-          claimPreferredService(current)
-        }
-      }
+    if (bytes.size > MAX_NDEF_MESSAGE) {
+      nativeDeliverNfcError(pid, "too_large")
+      return
     }
+    val writable = obj.optBoolean("writable", false)
+    val gen = emulationGen.incrementAndGet()
+    val act =
+        activity()
+            ?: run {
+              nativeDeliverNfcError(pid, "no_activity")
+              return
+            }
+    act.runOnUiThread { startEmulation(pid, bytes, writable, gen) }
+  }
+
+  // Main thread. Gate on hardware + routing, THEN publish the payload.
+  private fun startEmulation(pid: Long, bytes: ByteArray, writable: Boolean, gen: Int) {
+    // A later emulate_ndef / stop_emulation already decided the state.
+    if (emulationGen.get() != gen) return
+    val act =
+        activity()
+            ?: run {
+              nativeDeliverNfcError(pid, "no_activity")
+              return
+            }
+    val a = NfcAdapter.getDefaultAdapter(act)
+    val hce = act.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC_HOST_CARD_EMULATION)
+    if (a == null || !hce) {
+      Log.i(TAG, "HCE unavailable: adapter=${a != null} hceFeature=$hce")
+      nativeDeliverNfcError(pid, "unavailable")
+      return
+    }
+    if (!a.isEnabled) {
+      nativeDeliverNfcError(pid, "disabled")
+      return
+    }
+    // Reader mode and card emulation are mutually exclusive on one NFC
+    // controller — if a reader session is active (e.g. auto-armed on mount),
+    // drop it so the phone presents purely as an emulated card.
+    try {
+      a.disableReaderMode(act)
+    } catch (_: Throwable) {}
+    // setPreferredService needs a resumed activity; a backgrounded app must not
+    // emulate at all (see the pause handler).
+    if (!activityResumed || !claimPreferredService(act)) {
+      Log.i(TAG, "HCE unavailable: resumed=$activityResumed, routing not granted")
+      // A previous emulation can't keep serving without routing either.
+      val prevPid = emulationPid
+      val wasEmulating = emulatedNdef != null
+      clearEmulationState()
+      if (activityResumed) releasePreferredService(act)
+      if (wasEmulating && prevPid != 0L && prevPid != pid) nativeDeliverNfcEmulationStopped(prevPid)
+      nativeDeliverNfcError(pid, "unavailable")
+      return
+    }
+    emulationWritable = writable
+    emulationPid = pid
+    emulatedNdef = bytes
     nativeDeliverNfcEmulationStarted(pid)
   }
 
   /** Stop emulating. */
   @JvmStatic
   fun nfc_stop_emulation(pid: Long) {
-    emulatedNdef = null
-    emulationWritable = false
-    emulationPid = 0
+    emulationGen.incrementAndGet()
+    clearEmulationState()
     val act = activity()
     if (act != null) {
       act.runOnUiThread {
@@ -339,6 +407,9 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
   // into the emulated (writable) tag. Updates what we now serve + notifies.
   @JvmStatic
   fun onHceWritten(bytes: ByteArray) {
+    // Emulation stopped mid-write (stop_emulation / app paused): don't
+    // resurrect the payload.
+    if (emulatedNdef == null) return
     emulatedNdef = bytes
     val pid = emulationPid
     if (pid != 0L) nativeDeliverNfcHceWritten(pid, bytes)
@@ -479,6 +550,14 @@ class MobNfcApduService : HostApduService() {
   private var writeBuf: ByteArray? = null
 
   override fun processCommandApdu(apdu: ByteArray?, extras: Bundle?): ByteArray {
+    // Not emulating (never started, stop_emulation, or the app was paused):
+    // refuse everything so a reader can't even select the NDEF application.
+    // Mirrors MobNfc.Hce.handle_apdu/2 on a stopped responder.
+    if (MobNfcBridge.emulatedNdef == null) {
+      selectedFile = 0
+      writeBuf = null
+      return SW_FILE_NOT_FOUND
+    }
     if (apdu == null || apdu.size < 4) return SW_ERROR
     val ins = apdu[1].toInt() and 0xFF
 

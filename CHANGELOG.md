@@ -6,6 +6,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.4] - 2026-10-05
+
+Fixes from the Operator v1 release review (MOB-395).
+
+### Changed (behaviour)
+- **HCE no longer serves while the phone is locked.** The contributed
+  `res/xml/mob_nfc_hce_apduservice.xml` now declares
+  `android:requireDeviceUnlock="true"` (was `"false"`).
+- **HCE emulation is foreground-only and is now stopped on background.**
+  When the host activity pauses (backgrounded, screen off) the emulated
+  payload is dropped, the preferred-service claim released,
+  `MobNfcApduService` refuses every APDU (`6A82`), and the owner receives
+  `{:nfc, :emulation_stopped}`. Previously only the routing preference was
+  released and the payload was retained and re-armed on resume. Apps that
+  want emulation back after resuming must call `MobNfc.emulate_ndef/3` again.
+
+### Fixed
+- **`emulate_ndef/3` no longer claims success on hardware that can't
+  emulate.** `{:nfc, :emulation_started}` is sent only when the device has
+  `FEATURE_NFC_HOST_CARD_EMULATION`, the NFC adapter exists and is enabled,
+  the activity is resumed, and `CardEmulation.setPreferredService` succeeded.
+  Otherwise exactly one error arrives instead: `{:nfc, :error, :unavailable}`
+  (no NFC / no HCE / app not in the foreground / routing refused) or
+  `{:nfc, :error, :disabled}` (NFC switched off), matching `start_reading/2`.
+- **NDEF messages larger than the emulated file are rejected.** The emulated
+  tag advertises a 1024-byte NDEF file including the 2-byte NLEN, so
+  `emulate_ndef/3` now rejects messages over 1022 bytes with
+  `{:nfc, :error, :too_large}` (checked in Elixir before the NIF, and again in
+  the Android bridge). New `MobNfc.Hce.max_message_size/0`,
+  `MobNfc.Hce.check_size/1`, and `MobNfc.Hce.stop/1` (the pure reference for the
+  stopped-service behaviour); `MobNfc.Hce.new/2` raises on an oversized message.
+
 ## [0.1.3] - 2026-10-04
 
 ### Changed
