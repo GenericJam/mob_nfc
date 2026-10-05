@@ -33,12 +33,14 @@ defmodule MobNfc do
       {:nfc, :session_ended, reason}                    # :done | :user_cancel | :error | ...
       {:nfc, :error, reason}                            # :disabled | :unavailable | :read_failed | :read_only | :too_small | :not_ndef | :unsupported | ...
 
-  Android card emulation (HCE) via `emulate_ndef/3` adds:
+  Android card emulation (HCE) via `emulate_ndef/3` adds (foreground-only; see
+  `emulate_ndef/3`):
 
-      {:nfc, :emulation_started}                        # HCE active
+      {:nfc, :emulation_started}                        # HCE live (feature present, NFC on, routing claimed)
       {:nfc, :hce_read}                                 # a reader read the emulated tag
       {:nfc, :hce_written, %{ndef: binary}}             # a reader wrote to it (writable HCE)
-      {:nfc, :emulation_stopped}                        # stop_emulation/1
+      {:nfc, :emulation_stopped}                        # stop_emulation/1, or the app was backgrounded
+      {:nfc, :error, :too_large}                        # message > 1022 bytes (MobNfc.Hce.max_message_size/0)
 
   `ndef` is the **raw NDEF message bytes**. Turn it into records with
   `MobNfc.Ndef.parse/1` (one tested parser shared across platforms), and decode
@@ -198,10 +200,30 @@ defmodule MobNfc do
   iOS has no third-party HCE API (the Secure Element is reserved), so this sends
   `{:nfc, :error, :unsupported}` there. Events:
 
-      {:nfc, :emulation_started}
+      {:nfc, :emulation_started}         # HCE is live and this app owns routing
       {:nfc, :hce_read}                  # a reader read the emulated tag
       {:nfc, :hce_written, %{ndef: bin}} # a reader wrote to it (`:writable` only)
-      {:nfc, :emulation_stopped}
+      {:nfc, :emulation_stopped}         # stopped: stop_emulation/1, app paused, or replaced
+      {:nfc, :error, :too_large}         # message > MobNfc.Hce.max_message_size/0 (1022 bytes)
+      {:nfc, :error, :unavailable}       # no NFC / no HCE feature / not foreground / routing refused
+      {:nfc, :error, :disabled}          # NFC radio switched off in settings
+      {:nfc, :error, :no_activity}       # no host activity attached yet
+
+  `:emulation_started` is only sent once emulation is actually live: the
+  device has the HCE feature, the NFC adapter exists and is enabled, the app is
+  in the foreground, and `CardEmulation.setPreferredService` succeeded.
+  Otherwise one `{:nfc, :error, reason}` arrives and nothing is emulated. A
+  call that passes the up-front checks (size, payload, an attached activity)
+  but then fails also ends any emulation that was already running (its owner
+  gets `:emulation_stopped`). A call superseded by a later `emulate_ndef/3` or
+  `stop_emulation/1` before it took effect gets no reply of its own. A
+  successful call from another process replaces the running emulation, whose
+  owner gets `:emulation_stopped`.
+
+  The emulated tag advertises a 1024-byte NDEF file (2 bytes of which are the
+  length prefix), so `content` must encode to at most
+  `MobNfc.Hce.max_message_size/0` (1022) bytes; larger messages are rejected
+  with `{:nfc, :error, :too_large}` before reaching the native layer.
 
   ## Options
 
@@ -210,35 +232,53 @@ defmodule MobNfc do
       message arrives as `{:nfc, :hce_written, %{ndef: bytes}}` and becomes what
       the tag subsequently serves. Defaults to `false` (read-only tag).
 
+  ## Foreground only
+
   On Android the `HostApduService` `<service>` and its `res/xml` AID filter
-  are contributed to the host app automatically by mob_dev (≥ 0.6.19). While
-  the app is in the foreground and emulating, it is the preferred HCE service
-  (`CardEmulation.setPreferredService`), so other installed apps registering
-  the same NDEF AID don't compete for the reader; backgrounding the app
-  releases that preference until it resumes.
+  are contributed to the host app automatically by mob_dev (≥ 0.6.19). The
+  service declares `requireDeviceUnlock="true"`, so a locked phone never serves
+  the tag. Emulation lives only while the host activity is resumed: while
+  emulating, the app is the preferred HCE service
+  (`CardEmulation.setPreferredService`), and whenever the activity pauses
+  emulation is **stopped** — the payload is dropped, the preference released,
+  the service refuses further APDUs, and `{:nfc, :emulation_stopped}` is
+  delivered. Besides backgrounding and screen-off, that includes a runtime
+  permission prompt or other dialog-style activity on top. Nothing re-arms it
+  automatically: call `emulate_ndef/3` again on resume, e.g. after
+  `Mob.Device.subscribe([:app])`, on `{:mob_device, :did_become_active}`.
+  Rotation doesn't pause a generated mob app (its `MainActivity` handles
+  orientation in place); a configuration change that does recreate the
+  activity stops emulation too, and `Mob.Device` sends no
+  `:did_become_active` for that recreation.
   """
   @spec emulate_ndef(Mob.Socket.t(), binary() | map() | [map()], keyword()) :: Mob.Socket.t()
   def emulate_ndef(socket, content, opts \\ []) do
     case Platform.current() do
-      :host ->
-        send(self(), {:nfc, :error, :unsupported})
-
-      :ios ->
+      p when p in [:host, :ios] ->
         send(self(), {:nfc, :error, :unsupported})
 
       _ ->
-        :mob_nfc_nif.nfc_emulate_ndef(emulation_json(content, opts))
+        case emulation_request(content, opts) do
+          {:ok, json} -> :mob_nfc_nif.nfc_emulate_ndef(json)
+          {:error, reason} -> send(self(), {:nfc, :error, reason})
+        end
     end
 
     socket
   end
 
   @doc false
-  # Pure: the opts JSON handed to the emulate NIF. Public for testing.
-  @spec emulation_json(binary() | map() | [map()], keyword()) :: String.t()
-  def emulation_json(content, opts) do
+  # Pure: validates the message size and builds the opts JSON handed to the
+  # emulate NIF. Public for testing.
+  @spec emulation_request(binary() | map() | [map()], keyword()) ::
+          {:ok, String.t()} | {:error, :too_large}
+  def emulation_request(content, opts) do
+    ndef = to_ndef_bytes(content)
     writable = Keyword.get(opts, :writable, false) == true
-    JSON.encode!(%{ndef: Base.encode64(to_ndef_bytes(content)), writable: writable})
+
+    with :ok <- MobNfc.Hce.check_size(ndef) do
+      {:ok, JSON.encode!(%{ndef: Base.encode64(ndef), writable: writable})}
+    end
   end
 
   @doc false
@@ -247,7 +287,13 @@ defmodule MobNfc do
   def to_ndef_bytes(content) when is_binary(content), do: content
   def to_ndef_bytes(content), do: MobNfc.Ndef.encode(content)
 
-  @doc "Stop tag emulation started by `emulate_ndef/3`. Android only; no-op elsewhere."
+  @doc """
+  Stop tag emulation started by `emulate_ndef/3`. Android only; no-op elsewhere.
+
+  Always acknowledged with `{:nfc, :emulation_stopped}` to the caller — even if
+  emulation had already stopped (e.g. the app was paused), so a second
+  `:emulation_stopped` is possible.
+  """
   @spec stop_emulation(Mob.Socket.t()) :: Mob.Socket.t()
   def stop_emulation(socket) do
     case Platform.current() do

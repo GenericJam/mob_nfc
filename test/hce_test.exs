@@ -176,4 +176,51 @@ defmodule MobNfc.HceTest do
       assert {<<0x6D, 0x00>>, _, nil} = Hce.handle_apdu(<<0x00>>, Hce.new(@ndef))
     end
   end
+
+  describe "NDEF size limit (1024-byte file incl. 2-byte NLEN)" do
+    test "max_message_size/0 is 1022" do
+      assert Hce.max_message_size() == 1022
+    end
+
+    test "check_size/1 accepts 1022 bytes and rejects 1023" do
+      assert Hce.check_size(:binary.copy(<<1>>, 1022)) == :ok
+      assert Hce.check_size(:binary.copy(<<1>>, 1023)) == {:error, :too_large}
+    end
+
+    test "new/2 refuses a message whose NLEN would exceed the advertised file" do
+      assert_raise ArgumentError, ~r/1023 bytes/, fn -> Hce.new(:binary.copy(<<1>>, 1023)) end
+    end
+
+    test "a max-size message reads back whole with an NLEN within the CC's file size" do
+      msg = :binary.copy(<<7>>, 1022)
+
+      {steps, _} =
+        run(Hce.new(msg), [select_aid(), select_file(0xE104), read_binary(0, 2)])
+
+      {<<nlen::16, 0x90, 0x00>>, nil} = List.last(steps)
+      assert nlen == 1022
+      assert nlen + 2 <= 0x0400
+    end
+  end
+
+  describe "stopped responder (stop_emulation / app backgrounded)" do
+    test "refuses every APDU with 6A82, including the NDEF app SELECT" do
+      {_, selected, nil} = Hce.handle_apdu(select_file(0xE104), Hce.new(@ndef))
+      s = Hce.stop(selected)
+
+      {steps, s2} = run(s, [select_aid(), select_file(0xE104), read_binary(0, 0xFF)])
+      assert Enum.all?(steps, &(&1 == {<<0x6A, 0x82>>, nil}))
+      assert s2.ndef == nil
+    end
+
+    test "drops a half-written buffer so a later write can't complete it" do
+      s = %{Hce.new(<<>>, true) | selected: :ndef}
+      {<<0x90, 0x00>>, s, nil} = Hce.handle_apdu(update_binary(0, <<0, 0>>), s)
+      stopped = Hce.stop(s)
+      assert stopped.write_buf == nil
+
+      assert {<<0x6A, 0x82>>, _, nil} =
+               Hce.handle_apdu(update_binary(0, <<0, 3, 1, 2, 3>>), stopped)
+    end
+  end
 end

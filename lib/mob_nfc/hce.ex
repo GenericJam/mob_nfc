@@ -31,30 +31,71 @@ defmodule MobNfc.Hce do
 
   # Max NDEF file size advertised in the CC (0x0400 = 1024, incl. 2-byte NLEN).
   @capacity 1024
+  # Largest NDEF message that fits that file (capacity minus the NLEN prefix).
+  @max_message_size @capacity - 2
 
   @type selected :: :none | :cc | :ndef
+  # `ndef: nil` = emulation stopped (see `stop/1`): every APDU is refused.
   @type state :: %{
           selected: selected(),
-          ndef: binary(),
+          ndef: binary() | nil,
           writable: boolean(),
           write_buf: binary() | nil
         }
   @type event :: nil | :read | {:written, binary()}
 
-  @doc "Initial responder state serving `ndef`, optionally writable."
+  @doc """
+  Largest NDEF message (bytes) an emulated tag can serve: the CC advertises a
+  #{@capacity}-byte NDEF file, of which 2 bytes are the NLEN length prefix.
+  """
+  @spec max_message_size() :: pos_integer()
+  def max_message_size, do: @max_message_size
+
+  @doc """
+  `:ok` when `ndef` fits the advertised NDEF file (≤ #{@max_message_size}
+  bytes), else `{:error, :too_large}`.
+  """
+  @spec check_size(binary()) :: :ok | {:error, :too_large}
+  def check_size(ndef) when byte_size(ndef) <= @max_message_size, do: :ok
+  def check_size(ndef) when is_binary(ndef), do: {:error, :too_large}
+
+  @doc """
+  Initial responder state serving `ndef`, optionally writable.
+
+  Raises `ArgumentError` when `ndef` exceeds `max_message_size/0` — the CC
+  would otherwise advertise a file smaller than the NLEN it serves.
+  """
   @spec new(binary(), boolean()) :: state()
   def new(ndef, writable \\ false) when is_binary(ndef) and is_boolean(writable) do
+    if check_size(ndef) != :ok do
+      raise ArgumentError,
+            "NDEF message is #{byte_size(ndef)} bytes; an emulated tag serves at most " <>
+              "#{@max_message_size}"
+    end
+
     %{selected: :none, ndef: ndef, writable: writable, write_buf: nil}
   end
+
+  @doc """
+  Stop emulating: drop the served message and any half-written buffer. A
+  stopped responder refuses every APDU with `6A82` (the Android service does
+  the same once emulation is stopped or the app is backgrounded).
+  """
+  @spec stop(state()) :: state()
+  def stop(state), do: %{state | selected: :none, ndef: nil, write_buf: nil}
 
   @doc """
   Handle one command APDU. Returns `{response_bytes, new_state, event}`.
 
   Unknown instructions get `6D00`; malformed/oversized get `6F00`; a SELECT of
-  an unknown file id gets `6A82`.
+  an unknown file id gets `6A82`; a stopped responder (`stop/1`) answers `6A82`
+  to everything.
   """
   @spec handle_apdu(binary(), state()) :: {binary(), state(), event()}
   def handle_apdu(apdu, state)
+
+  # Not emulating: refuse everything, so a reader can't select the NDEF app.
+  def handle_apdu(_apdu, %{ndef: nil} = state), do: {@sw_file_not_found, state, nil}
 
   # SELECT by name (AID) — the NDEF Tag Application (00 A4 04 00 <len> <aid> …).
   def handle_apdu(<<0x00, 0xA4, 0x04, _rest::binary>>, state) do
@@ -147,7 +188,7 @@ defmodule MobNfc.Hce do
         <<nlen::16, _::binary>> = buf
 
         # A non-zero NLEN means the reader has finalised the write.
-        if nlen >= 1 and nlen <= @capacity - 2 do
+        if nlen >= 1 and nlen <= @max_message_size do
           {@sw_ok, %{state | write_buf: nil}, {:written, binary_part(buf, 2, nlen)}}
         else
           {@sw_ok, %{state | write_buf: buf}, nil}

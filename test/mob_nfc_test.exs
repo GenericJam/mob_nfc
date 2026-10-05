@@ -59,23 +59,42 @@ defmodule MobNfcTest do
     end
   end
 
-  describe "emulation_json/2 (emulate_ndef transport)" do
+  describe "emulation_request/2 (emulate_ndef transport)" do
+    defp emulation_opts(content, opts) do
+      {:ok, json} = MobNfc.emulation_request(content, opts)
+      JSON.decode!(json)
+    end
+
     test "defaults to non-writable" do
-      assert JSON.decode!(MobNfc.emulation_json("", []))["writable"] == false
+      assert emulation_opts("", [])["writable"] == false
     end
 
     test "writable: true is carried through" do
-      assert JSON.decode!(MobNfc.emulation_json("", writable: true))["writable"] == true
+      assert emulation_opts("", writable: true)["writable"] == true
     end
 
     test "only the literal true enables writable" do
-      assert JSON.decode!(MobNfc.emulation_json("", writable: :yes))["writable"] == false
+      assert emulation_opts("", writable: :yes)["writable"] == false
     end
 
     test "encodes record content round-trippably" do
-      j = JSON.decode!(MobNfc.emulation_json(MobNfc.Ndef.text_record("hi"), writable: true))
+      j = emulation_opts(MobNfc.Ndef.text_record("hi"), writable: true)
       [rec] = j["ndef"] |> Base.decode64!() |> MobNfc.Ndef.parse()
       assert MobNfc.Ndef.decode_text(rec) == {:ok, %{text: "hi", lang: "en"}}
+    end
+
+    test "a message of exactly 1022 bytes (1024-byte file minus NLEN) is accepted" do
+      raw = :binary.copy(<<0xAB>>, 1022)
+      assert Base.decode64!(emulation_opts(raw, [])["ndef"]) == raw
+    end
+
+    test "a 1023-byte raw message is rejected as :too_large" do
+      assert MobNfc.emulation_request(:binary.copy(<<0xAB>>, 1023), []) == {:error, :too_large}
+    end
+
+    test "records that encode past the limit are rejected as :too_large" do
+      rec = MobNfc.Ndef.text_record(String.duplicate("x", 1100))
+      assert MobNfc.emulation_request(rec, writable: true) == {:error, :too_large}
     end
   end
 
@@ -125,6 +144,15 @@ defmodule MobNfcTest do
       assert snippet =~ "@xml/mob_nfc_hce_apduservice"
 
       assert "priv/native/android/res/xml/mob_nfc_hce_apduservice.xml" in @manifest.android.res_files
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the HCE service never serves while the device is locked" do
+      # requireDeviceUnlock="false" let a locked, pocketed phone answer any
+      # reader with the emulated payload (Operator v1 review, MOB-395).
+      xml = File.read!("priv/native/android/res/xml/mob_nfc_hce_apduservice.xml")
+      assert xml =~ ~s(android:requireDeviceUnlock="true")
+      refute xml =~ ~s(android:requireDeviceUnlock="false")
     end
 
     test "every @xml/@string resource the manifest snippets reference ships in res_files" do
