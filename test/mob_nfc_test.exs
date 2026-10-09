@@ -243,20 +243,21 @@ defmodule MobNfcTest do
       assert Mob.Plugin.SelfTest.result?(result)
     end
 
-    test "an Android bridge that never registered or has no Activity fails" do
-      assert {:fail, "Kotlin MobNfcBridge not registered" <> _} =
-               result = SelfTest.classify({:error, :bridge_not_registered})
-
-      assert Mob.Plugin.SelfTest.result?(result)
-
-      assert {:fail, "MobNfcBridge has no Activity" <> _} =
-               result = SelfTest.classify({:error, :no_activity})
-
-      assert Mob.Plugin.SelfTest.result?(result)
+    test "every Android error answer fails with its own reason" do
+      for {answer, prefix} <- [
+            {{:error, :bridge_not_registered}, "Kotlin MobNfcBridge not registered"},
+            {{:error, :no_activity}, "MobNfcBridge has no Activity"},
+            {{:error, :no_jni_env}, "no JNIEnv could be attached"},
+            {{:error, :bridge_exception}, "MobNfcBridge.nfc_state() threw"}
+          ] do
+        assert {:fail, reason} = result = SelfTest.classify(answer)
+        assert String.starts_with?(reason, prefix)
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
     end
 
     test "any other answer fails, quoting it" do
-      for answer <- [{:error, :no_jni_env}, {:error, :bridge_exception}, :ok, nil] do
+      for answer <- [{:error, :unsupported}, :ok, nil] do
         assert {:fail, reason} = result = SelfTest.classify(answer)
         assert reason =~ "nfc_available/0 returned #{inspect(answer)}"
         assert Mob.Plugin.SelfTest.result?(result)

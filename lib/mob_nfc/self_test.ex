@@ -59,7 +59,15 @@ defmodule MobNfc.SelfTest do
     {:fail, "MobNfcBridge has no Activity (MobActivityAware.setActivity never called)"}
   end
 
+  def classify({:error, :no_jni_env}) do
+    {:fail, "no JNIEnv could be attached to the calling scheduler thread"}
+  end
+
+  def classify({:error, :bridge_exception}) do
+    {:fail, "MobNfcBridge.nfc_state() threw (see logcat tag MobNfc)"}
+  end
+
   def classify(other) do
-    {:fail, "nfc_available/0 returned #{inspect(other)}, expected true or false"}
+    {:fail, "nfc_available/0 returned #{inspect(other)}, expected true, false or :disabled"}
   end
 end
