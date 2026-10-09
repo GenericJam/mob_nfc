@@ -30,7 +30,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   the bootstrap hands the bridge an Activity, `{:error, :no_jni_env}` when
   no JNIEnv can be attached, and `{:error, :bridge_exception}` when the
   Kotlin side throws (a pending Java exception is now detected and
-  cleared). The Kotlin bridge method is now `nfc_state(): Int` (was
+  cleared), and `{:error, :unknown_state}` for an unrecognised bridge code. The Kotlin bridge method is now `nfc_state(): Int` (was
   `nfc_available(): Boolean`). `MobNfc.available?/0` is unchanged (still
   `false` in all those cases). Method-id lookups in `nativeRegister` now
   clear a pending `NoSuchMethodError` so one missing method can't poison

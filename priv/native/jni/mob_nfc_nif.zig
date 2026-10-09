@@ -120,7 +120,8 @@ fn takeException(jenv: *jni.JNIEnv) bool {
 // when nativeRegister never ran or the nfc_state lookup failed,
 // {:error, :no_jni_env} when no JNIEnv could be attached, {:error, :no_activity}
 // when the bootstrap never handed the bridge an Activity, and
-// {:error, :bridge_exception} when the Kotlin side threw. MobNfc.available?/0
+// {:error, :bridge_exception} when the Kotlin side threw, and
+// {:error, :unknown_state} for a code this NIF doesn't know. MobNfc.available?/0
 // compares with `== true`, so it still answers false for all of them.
 export fn nif_nfc_available(
     env: ?*erts.ErlNifEnv,
@@ -140,7 +141,8 @@ export fn nif_nfc_available(
         0 => erts.atom(env, "false"),
         2 => erts.atom(env, "disabled"),
         -1 => nfcError(env, "no_activity"),
-        else => nfcError(env, "bridge_exception"),
+        -2 => nfcError(env, "bridge_exception"),
+        else => nfcError(env, "unknown_state"),
     };
 }
 

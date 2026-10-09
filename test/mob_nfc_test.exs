@@ -286,8 +286,14 @@ defmodule MobNfcTest do
 
       for [_, name, sig] <- lookups do
         {params, ret} = kotlin_sig(sig)
-        match = Regex.run(~r/fun #{name}\(([^)]*)\)(?::\s*(\w+))?/, kt, capture: :all_but_first)
-        assert match, "#{name} is looked up in zig but not declared in MobNfcBridge.kt"
+        # Bridge methods live on a Kotlin `object`: without @JvmStatic they are
+        # instance methods and GetStaticMethodID misses them.
+        match =
+          Regex.run(~r/@JvmStatic\s+fun #{name}\(([^)]*)\)(?::\s*(\w+))?/, kt,
+            capture: :all_but_first
+          )
+
+        assert match, "#{name} is looked up in zig but not a @JvmStatic fun in MobNfcBridge.kt"
         [kt_params | kt_ret] = match
 
         kt_types =
