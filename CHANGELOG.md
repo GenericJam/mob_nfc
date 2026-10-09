@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.1.5] - 2026-10-09
 
 ### Added
 
@@ -21,8 +21,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
-- **Requires mob 0.9.15 or later** (was `~> 0.7`): hosts on mob 0.7 or 0.8
-  must upgrade before taking this release.
+- **Requires mob >= 0.9.15** (was `~> 0.7`), for `Mob.Plugin.SelfTest`;
+  `mob_version` in the manifest is now `~> 0.9` (was `~> 0.7`). Hosts on
+  mob 0.7 or 0.8 must upgrade before taking this release.
 - **Android: `nfc_available/0` no longer answers `false` without asking the
   radio.** `false` now means only "no NFC hardware"; the other answers are:
   - `:disabled`: the radio is present but switched off;
@@ -40,8 +41,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `nfc_available(): Boolean`). `MobNfc.available?/0` is unchanged (still
   `false` for all of these). Method-id lookups in `nativeRegister` now clear
   a pending `NoSuchMethodError` so one missing method can't poison the rest.
-
----
 
 ## [0.1.4] - 2026-10-05
 
