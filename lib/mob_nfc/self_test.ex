@@ -12,12 +12,19 @@ defmodule MobNfc.SelfTest do
       `nativeRegister`-cached method id.
     * `false` is `{:skip, :needs_hardware}`: the same native call answered
       (so the NIF is linked and, on Android, the Kotlin bridge is registered
-      and has an Activity), but the device has no NFC radio or it is
-      switched off. iOS simulators and Android emulators land here.
+      and has an Activity), but the device has no NFC radio. iOS simulators
+      and Android emulators land here.
+    * `:disabled` (Android only: the radio is present but switched off in
+      Settings) is a skip whose reason says so: init is proven, but the
+      radio can't be exercised until someone turns it on.
     * `{:error, :bridge_not_registered}` (Android: `MobNfcBridge.register()`
       never ran or the `nfc_state` method-id lookup failed),
       `{:error, :no_activity}` (the bootstrap never called `setActivity`),
       and any other answer are failures: the plugin can't work in that host.
+
+  A pass proves the NIF and bridge answer, not that reading works: the iOS
+  NFC entitlement and usage string are only checked when a reader session
+  begins, which would raise the system sheet, so the test never starts one.
 
   The host stub's `nif_not_loaded` is a failure too.
   """
@@ -28,7 +35,11 @@ defmodule MobNfc.SelfTest do
     classify(:mob_nfc_nif.nfc_available())
   rescue
     e in ErlangError ->
-      {:fail, "mob_nfc_nif is not linked into this build: #{Exception.message(e)}"}
+      if e.original == :nif_not_loaded do
+        {:fail, "mob_nfc_nif is not linked into this build: #{Exception.message(e)}"}
+      else
+        reraise e, __STACKTRACE__
+      end
   end
 
   @doc false
@@ -37,6 +48,7 @@ defmodule MobNfc.SelfTest do
   @spec classify(term()) :: Mob.Plugin.SelfTest.result()
   def classify(true), do: :pass
   def classify(false), do: {:skip, :needs_hardware}
+  def classify(:disabled), do: {:skip, "NFC radio present but switched off in Settings"}
 
   def classify({:error, :bridge_not_registered}) do
     {:fail,

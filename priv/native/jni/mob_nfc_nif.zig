@@ -98,16 +98,30 @@ fn nfcError(env: ?*erts.ErlNifEnv, comptime reason: [:0]const u8) erts.ERL_NIF_T
     return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, reason) });
 }
 
+// ExceptionOccurred (jni.h slot 15) is left untyped in mob's vtable; it takes
+// the env and returns a local ref to the pending Throwable, or null.
+const ExceptionOccurredFn = *const fn (env: *jni.JNIEnv) callconv(.c) jni.JObject;
+
+// Clears a Throwable left pending by the last call; true if there was one.
+fn takeException(jenv: *jni.JNIEnv) bool {
+    const occurred: ExceptionOccurredFn = @ptrCast(@alignCast(jenv.*.ExceptionOccurred orelse return false));
+    const exc = occurred(jenv) orelse return false;
+    jni.exceptionClear(jenv);
+    jni.deleteLocalRef(jenv, exc);
+    return true;
+}
+
 // ── NIFs ──
 
-// true / false come only from MobNfcBridge.nfc_state(), so either answer proves
-// the bridge registered and the JNI call went through. Everything that used to
-// collapse into `false` without asking the radio is an error tuple instead
-// (MOB-418): {:error, :bridge_not_registered} when nativeRegister never ran or
-// the nfc_state lookup failed, {:error, :no_jni_env} when no JNIEnv could be
-// attached, {:error, :no_activity} when the bootstrap never handed the bridge
-// an Activity, {:error, :bridge_exception} when the Kotlin side threw.
-// MobNfc.available?/0 compares with `== true`, so it still answers false.
+// true / false / :disabled come only from a completed MobNfcBridge.nfc_state()
+// call, so any of them proves the bridge registered and the JNI call went
+// through. Everything that used to collapse into `false` without asking the
+// radio is an error tuple instead (MOB-418): {:error, :bridge_not_registered}
+// when nativeRegister never ran or the nfc_state lookup failed,
+// {:error, :no_jni_env} when no JNIEnv could be attached, {:error, :no_activity}
+// when the bootstrap never handed the bridge an Activity, and
+// {:error, :bridge_exception} when the Kotlin side threw. MobNfc.available?/0
+// compares with `== true`, so it still answers false for all of them.
 export fn nif_nfc_available(
     env: ?*erts.ErlNifEnv,
     argc: c_int,
@@ -120,9 +134,11 @@ export fn nif_nfc_available(
     const jenv = get_jenv(&attached) orelse return nfcError(env, "no_jni_env");
     defer detachIfAttached(attached);
     const r = jenv.*.CallStaticIntMethod.?(jenv, g_nfc_cls, g_nfc.state);
+    if (takeException(jenv)) return nfcError(env, "bridge_exception");
     return switch (r) {
         1 => erts.atom(env, "true"),
-        0, 2 => erts.atom(env, "false"),
+        0 => erts.atom(env, "false"),
+        2 => erts.atom(env, "disabled"),
         -1 => nfcError(env, "no_activity"),
         else => nfcError(env, "bridge_exception"),
     };

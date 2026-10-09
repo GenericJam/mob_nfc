@@ -207,9 +207,9 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
    * NFC radio state for the `nfc_available` NIF: 1 = present and enabled,
    * 2 = present but switched off, 0 = no NFC hardware, -1 = no Activity yet
    * (the bootstrap never called setActivity), -2 = the adapter lookup threw.
-   * The NIF maps 1 to true, 0 and 2 to false, and the negatives to error
-   * tuples, so a host integration bug is not mistaken for a phone without NFC
-   * (MOB-418). Never throws: a pending exception would read back as 0.
+   * The NIF maps 1 to true, 0 to false, 2 to :disabled, and the negatives (or
+   * an Error that escapes, which it sees pending) to error tuples, so a host
+   * integration bug is not mistaken for a phone without NFC (MOB-418).
    */
   @JvmStatic
   fun nfc_state(): Int =

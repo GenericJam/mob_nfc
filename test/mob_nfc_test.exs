@@ -232,9 +232,15 @@ defmodule MobNfcTest do
       assert Mob.Plugin.SelfTest.result?(:pass)
     end
 
-    test "an answered false (no radio, or switched off) is a needs_hardware skip" do
+    test "an answered false (no radio) is a needs_hardware skip" do
       assert SelfTest.classify(false) == {:skip, :needs_hardware}
       assert Mob.Plugin.SelfTest.result?({:skip, :needs_hardware})
+    end
+
+    test "an answered :disabled (radio present, switched off) is a skip saying so, not needs_hardware" do
+      assert {:skip, reason} = result = SelfTest.classify(:disabled)
+      assert reason =~ "switched off"
+      assert Mob.Plugin.SelfTest.result?(result)
     end
 
     test "an Android bridge that never registered or has no Activity fails" do
@@ -254,6 +260,40 @@ defmodule MobNfcTest do
         assert {:fail, reason} = result = SelfTest.classify(answer)
         assert reason =~ "nfc_available/0 returned #{inspect(answer)}"
         assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+  end
+
+  describe "Android JNI seam" do
+    # nativeRegister looks bridge methods up by name + JNI signature; a drift
+    # between the zig lookup and the Kotlin declaration only shows on a device
+    # (as {:error, :bridge_not_registered} for nfc_state). Pin them together.
+    @jni_types %{"J" => "Long", "I" => "Int", "Z" => "Boolean", "Ljava/lang/String;" => "String"}
+
+    defp kotlin_sig(sig) do
+      [_, args, ret] = Regex.run(~r/^\((.*)\)(.+)$/, sig)
+      params = Regex.scan(~r/L[^;]+;|[JIZ]/, args) |> Enum.map(fn [t] -> @jni_types[t] end)
+      {params, if(ret == "V", do: nil, else: @jni_types[ret])}
+    end
+
+    test "every method nativeRegister caches is a Kotlin bridge method with that signature" do
+      zig = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_nfc_nif.zig"))
+      kt = File.read!(Path.join(@plugin_dir, "priv/native/android/MobNfcBridge.kt"))
+
+      lookups = Regex.scan(~r/cacheMethod\(jenv, cls, "(\w+)", "([^"]+)"\)/, zig)
+      assert ["nfc_state", "()I"] in Enum.map(lookups, &tl/1)
+
+      for [_, name, sig] <- lookups do
+        {params, ret} = kotlin_sig(sig)
+        match = Regex.run(~r/fun #{name}\(([^)]*)\)(?::\s*(\w+))?/, kt, capture: :all_but_first)
+        assert match, "#{name} is looked up in zig but not declared in MobNfcBridge.kt"
+        [kt_params | kt_ret] = match
+
+        kt_types =
+          Regex.scan(~r/:\s*(\w+)\??/, kt_params) |> Enum.map(fn [_, t] -> t end)
+
+        assert kt_types == params, "#{name}: zig signature #{sig} vs Kotlin (#{kt_params})"
+        assert List.first(kt_ret) == ret, "#{name}: Kotlin return #{inspect(kt_ret)} vs #{sig}"
       end
     end
   end
