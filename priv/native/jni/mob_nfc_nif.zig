@@ -116,13 +116,13 @@ fn takeException(jenv: *jni.JNIEnv) bool {
 // true / false / :disabled come only from a completed MobNfcBridge.nfc_state()
 // call, so any of them proves the bridge registered and the JNI call went
 // through. Everything that used to collapse into `false` without asking the
-// radio is an error tuple instead (MOB-418): {:error, :bridge_not_registered}
-// when nativeRegister never ran or the nfc_state lookup failed,
-// {:error, :no_jni_env} when no JNIEnv could be attached, {:error, :no_activity}
-// when the bootstrap never handed the bridge an Activity, and
-// {:error, :bridge_exception} when the Kotlin side threw, and
-// {:error, :unknown_state} for a code this NIF doesn't know. MobNfc.available?/0
-// compares with `== true`, so it still answers false for all of them.
+// radio is an error tuple instead (MOB-418):
+//   bridge_not_registered  nativeRegister never ran or the nfc_state lookup failed
+//   no_jni_env             no JNIEnv could be attached
+//   no_activity            the bootstrap never handed the bridge an Activity
+//   bridge_exception       the Kotlin side threw
+//   unknown_state          a code this NIF doesn't know
+// MobNfc.available?/0 compares with `== true`, so all of them still read false.
 export fn nif_nfc_available(
     env: ?*erts.ErlNifEnv,
     argc: c_int,

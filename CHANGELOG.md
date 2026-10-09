@@ -24,17 +24,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Requires mob 0.9.15 or later** (was `~> 0.7`): hosts on mob 0.7 or 0.8
   must upgrade before taking this release.
 - **Android: `nfc_available/0` no longer answers `false` without asking the
-  radio.** It answers `:disabled` when the radio is present but switched
-  off, `{:error, :bridge_not_registered}` when `MobNfcBridge.register()`
-  never ran or the method-id lookup failed, `{:error, :no_activity}` before
-  the bootstrap hands the bridge an Activity, `{:error, :no_jni_env}` when
-  no JNIEnv can be attached, and `{:error, :bridge_exception}` when the
-  Kotlin side throws (a pending Java exception is now detected and
-  cleared), and `{:error, :unknown_state}` for an unrecognised bridge code. The Kotlin bridge method is now `nfc_state(): Int` (was
+  radio.** `false` now means only "no NFC hardware"; the other answers are:
+  - `:disabled`: the radio is present but switched off;
+  - `{:error, :bridge_not_registered}`: `MobNfcBridge.register()` never ran
+    or the method-id lookup failed;
+  - `{:error, :no_activity}`: the bootstrap hasn't handed the bridge an
+    Activity;
+  - `{:error, :no_jni_env}`: no JNIEnv could be attached;
+  - `{:error, :bridge_exception}`: the Kotlin side threw (a pending Java
+    exception is now detected and cleared);
+  - `{:error, :unknown_state}`: the bridge returned a code the NIF doesn't
+    know.
+
+  The Kotlin bridge method is now `nfc_state(): Int` (was
   `nfc_available(): Boolean`). `MobNfc.available?/0` is unchanged (still
-  `false` in all those cases). Method-id lookups in `nativeRegister` now
-  clear a pending `NoSuchMethodError` so one missing method can't poison
-  the rest.
+  `false` for all of these). Method-id lookups in `nativeRegister` now clear
+  a pending `NoSuchMethodError` so one missing method can't poison the rest.
 
 ---
 

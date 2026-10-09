@@ -257,7 +257,7 @@ defmodule MobNfcTest do
     end
 
     test "any other answer fails, quoting it" do
-      for answer <- [{:error, :unsupported}, :ok, nil] do
+      for answer <- [{:error, :unknown_state}, {:error, :unsupported}, :ok, nil] do
         assert {:fail, reason} = result = SelfTest.classify(answer)
         assert reason =~ "nfc_available/0 returned #{inspect(answer)}"
         assert Mob.Plugin.SelfTest.result?(result)
