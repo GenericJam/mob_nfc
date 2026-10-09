@@ -26,7 +26,10 @@ init() ->
         {error, _} -> ok
     end.
 
-%% Returns true when the device has an NFC radio that is present and enabled.
+%% Returns true when the device has an NFC radio that is present and enabled,
+%% false when it has none or it is switched off. Android answers
+%% {error, bridge_not_registered | no_activity | no_jni_env | bridge_exception}
+%% when the Kotlin bridge could not be asked (see MobNfc.SelfTest).
 nfc_available() ->
     erlang:nif_error(nif_not_loaded).
 

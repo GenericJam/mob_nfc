@@ -25,7 +25,7 @@ extern var g_jvm: ?*jni.JavaVM;
 
 // ── Plugin-owned bridge-class method-id cache (cached by nativeRegister) ──
 const NfcMethods = struct {
-    available: jni.JMethodID = null,
+    state: jni.JMethodID = null,
     start_reading: jni.JMethodID = null,
     start_writing: jni.JMethodID = null,
     stop_reading: jni.JMethodID = null,
@@ -35,15 +35,29 @@ const NfcMethods = struct {
 var g_nfc: NfcMethods = .{};
 var g_nfc_cls: jni.JClass = null;
 
+// A missing method leaves a `NoSuchMethodError` pending on the JNIEnv;
+// `cacheMethod` clears it so the following lookups aren't shadowed by a stale
+// pending exception (mirrors mob_location, MOB-77).
+inline fn cacheMethod(
+    jenv: *jni.JNIEnv,
+    cls: jni.JClass,
+    name: [*:0]const u8,
+    sig: [*:0]const u8,
+) jni.JMethodID {
+    const m = jni.getStaticMethodID(jenv, cls, name, sig);
+    if (m == null) jni.exceptionClear(jenv);
+    return m;
+}
+
 export fn Java_io_mob_nfc_MobNfcBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_nfc_cls = jni.newGlobalRef(jenv, cls);
     if (g_nfc_cls == null) return;
-    g_nfc.available = jni.getStaticMethodID(jenv, cls, "nfc_available", "()Z");
-    g_nfc.start_reading = jni.getStaticMethodID(jenv, cls, "nfc_start_reading", "(JLjava/lang/String;)V");
-    g_nfc.start_writing = jni.getStaticMethodID(jenv, cls, "nfc_start_writing", "(JLjava/lang/String;)V");
-    g_nfc.stop_reading = jni.getStaticMethodID(jenv, cls, "nfc_stop_reading", "(J)V");
-    g_nfc.emulate_ndef = jni.getStaticMethodID(jenv, cls, "nfc_emulate_ndef", "(JLjava/lang/String;)V");
-    g_nfc.stop_emulation = jni.getStaticMethodID(jenv, cls, "nfc_stop_emulation", "(J)V");
+    g_nfc.state = cacheMethod(jenv, cls, "nfc_state", "()I");
+    g_nfc.start_reading = cacheMethod(jenv, cls, "nfc_start_reading", "(JLjava/lang/String;)V");
+    g_nfc.start_writing = cacheMethod(jenv, cls, "nfc_start_writing", "(JLjava/lang/String;)V");
+    g_nfc.stop_reading = cacheMethod(jenv, cls, "nfc_stop_reading", "(J)V");
+    g_nfc.emulate_ndef = cacheMethod(jenv, cls, "nfc_emulate_ndef", "(JLjava/lang/String;)V");
+    g_nfc.stop_emulation = cacheMethod(jenv, cls, "nfc_stop_emulation", "(J)V");
 }
 
 // ── helpers ──
@@ -65,7 +79,7 @@ inline fn pidFromLong(jpid: jni.JLong) erts.ErlNifPid {
 }
 
 fn nfcUnsupported(env: ?*erts.ErlNifEnv) erts.ERL_NIF_TERM {
-    return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "unsupported") });
+    return nfcError(env, "unsupported");
 }
 
 fn makeBinary(env: ?*erts.ErlNifEnv, ptr: [*]const u8, len: usize) erts.ERL_NIF_TERM {
@@ -80,7 +94,20 @@ fn cstrBinary(env: ?*erts.ErlNifEnv, s: ?[*:0]const u8) erts.ERL_NIF_TERM {
     return makeBinary(env, p, std.mem.len(p));
 }
 
+fn nfcError(env: ?*erts.ErlNifEnv, comptime reason: [:0]const u8) erts.ERL_NIF_TERM {
+    return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, reason) });
+}
+
 // ── NIFs ──
+
+// true / false come only from MobNfcBridge.nfc_state(), so either answer proves
+// the bridge registered and the JNI call went through. Everything that used to
+// collapse into `false` without asking the radio is an error tuple instead
+// (MOB-418): {:error, :bridge_not_registered} when nativeRegister never ran or
+// the nfc_state lookup failed, {:error, :no_jni_env} when no JNIEnv could be
+// attached, {:error, :no_activity} when the bootstrap never handed the bridge
+// an Activity, {:error, :bridge_exception} when the Kotlin side threw.
+// MobNfc.available?/0 compares with `== true`, so it still answers false.
 export fn nif_nfc_available(
     env: ?*erts.ErlNifEnv,
     argc: c_int,
@@ -88,12 +115,17 @@ export fn nif_nfc_available(
 ) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     _ = argv;
-    if (g_nfc.available == null) return erts.atom(env, "false");
+    if (g_nfc_cls == null or g_nfc.state == null) return nfcError(env, "bridge_not_registered");
     var attached: c_int = 0;
-    const jenv = get_jenv(&attached) orelse return erts.atom(env, "false");
+    const jenv = get_jenv(&attached) orelse return nfcError(env, "no_jni_env");
     defer detachIfAttached(attached);
-    const r = jenv.*.CallStaticBooleanMethod.?(jenv, g_nfc_cls, g_nfc.available);
-    return if (r != 0) erts.atom(env, "true") else erts.atom(env, "false");
+    const r = jenv.*.CallStaticIntMethod.?(jenv, g_nfc_cls, g_nfc.state);
+    return switch (r) {
+        1 => erts.atom(env, "true"),
+        0, 2 => erts.atom(env, "false"),
+        -1 => nfcError(env, "no_activity"),
+        else => nfcError(env, "bridge_exception"),
+    };
 }
 
 // Shared: call a (JLjava/lang/String;)V bridge method with the caller's pid and

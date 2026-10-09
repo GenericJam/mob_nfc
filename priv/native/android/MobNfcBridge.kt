@@ -203,13 +203,29 @@ object MobNfcBridge : io.mob.plugin.MobActivityAware {
 
   // ── Static methods the NIF calls (signatures cached by nativeRegister) ───
 
-  /** True when the device has an NFC radio present and enabled. */
+  /**
+   * NFC radio state for the `nfc_available` NIF: 1 = present and enabled,
+   * 2 = present but switched off, 0 = no NFC hardware, -1 = no Activity yet
+   * (the bootstrap never called setActivity), -2 = the adapter lookup threw.
+   * The NIF maps 1 to true, 0 and 2 to false, and the negatives to error
+   * tuples, so a host integration bug is not mistaken for a phone without NFC
+   * (MOB-418). Never throws: a pending exception would read back as 0.
+   */
   @JvmStatic
-  fun nfc_available(): Boolean {
-    val act = activity() ?: return false
-    val a = NfcAdapter.getDefaultAdapter(act) ?: return false
-    return a.isEnabled
-  }
+  fun nfc_state(): Int =
+    try {
+      val act = activity()
+      val a = act?.let { NfcAdapter.getDefaultAdapter(it) }
+      when {
+        act == null -> -1
+        a == null -> 0
+        a.isEnabled -> 1
+        else -> 2
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "nfc_state failed", e)
+      -2
+    }
 
   /** Start reader mode; NDEF/tag events flow back to `pid`. */
   @JvmStatic

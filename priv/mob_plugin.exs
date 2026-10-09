@@ -15,9 +15,12 @@
 # field.
 %{
   name: :mob_nfc,
-  mob_version: "~> 0.7",
+  mob_version: "~> 0.9",
   plugin_spec_version: 1,
   description: "NFC — NDEF tag read/write via CoreNFC / Android NfcAdapter",
+  # On-device proof for `mix mob.selftest` / mob_ci: one read-only
+  # nfc_available/0 call through the NIF (see Mob.Plugin.SelfTest).
+  selftest: MobNfc.SelfTest,
   nifs: [
     # Android: zig NIF under this module — nfc_* bridging to the Kotlin
     # MobNfcBridge (NfcAdapter reader mode). `mob_nfc_nif_nif_init` is the

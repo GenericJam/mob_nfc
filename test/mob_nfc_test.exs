@@ -1,6 +1,10 @@
 defmodule MobNfcTest do
   use ExUnit.Case, async: true
 
+  alias MobNfc.SelfTest
+
+  @plugin_dir Path.expand("..", __DIR__)
+
   # The NIF is never loaded in the host test env, so these exercise the pure
   # Elixir layer: platform gating and the manifest contract. Native behavior is
   # verified on-device (see the plugin CLAUDE.md / README).
@@ -202,6 +206,55 @@ defmodule MobNfcTest do
       assert @manifest.android.bridge_class == "io.mob.nfc.MobNfcBridge"
       assert @manifest.android.jni_source =~ "mob_nfc_jni.c"
       assert @manifest.android.bridge_kt =~ "MobNfcBridge.kt"
+    end
+
+    test "declares the self-test, which passes the validator without a selftest warning" do
+      {:ok, m} = MobDev.Plugin.Manifest.load(@plugin_dir)
+      assert m.selftest == MobNfc.SelfTest
+
+      assert %{errors: [], warnings: warnings} =
+               MobDev.Plugin.Validator.validate_plugin(m, @plugin_dir)
+
+      refute Enum.any?(warnings, &(&1 =~ "selftest"))
+    end
+  end
+
+  describe "MobNfc.SelfTest" do
+    test "on a host with no native library linked it fails, naming the NIF, instead of raising" do
+      assert {:fail, reason} = result = SelfTest.run(%{platform: :android, device: :emulator})
+      assert reason =~ "mob_nfc_nif is not linked"
+      assert reason =~ "nif_not_loaded"
+      assert Mob.Plugin.SelfTest.result?(result)
+    end
+
+    test "a radio present and enabled passes" do
+      assert SelfTest.classify(true) == :pass
+      assert Mob.Plugin.SelfTest.result?(:pass)
+    end
+
+    test "an answered false (no radio, or switched off) is a needs_hardware skip" do
+      assert SelfTest.classify(false) == {:skip, :needs_hardware}
+      assert Mob.Plugin.SelfTest.result?({:skip, :needs_hardware})
+    end
+
+    test "an Android bridge that never registered or has no Activity fails" do
+      assert {:fail, "Kotlin MobNfcBridge not registered" <> _} =
+               result = SelfTest.classify({:error, :bridge_not_registered})
+
+      assert Mob.Plugin.SelfTest.result?(result)
+
+      assert {:fail, "MobNfcBridge has no Activity" <> _} =
+               result = SelfTest.classify({:error, :no_activity})
+
+      assert Mob.Plugin.SelfTest.result?(result)
+    end
+
+    test "any other answer fails, quoting it" do
+      for answer <- [{:error, :no_jni_env}, {:error, :bridge_exception}, :ok, nil] do
+        assert {:fail, reason} = result = SelfTest.classify(answer)
+        assert reason =~ "nfc_available/0 returned #{inspect(answer)}"
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
     end
   end
 
