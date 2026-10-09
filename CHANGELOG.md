@@ -6,6 +6,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **On-device self-test** (MOB-418). `MobNfc.SelfTest` implements
+  `Mob.Plugin.SelfTest` and is declared in the manifest as `selftest:`. It
+  makes one read-only `nfc_available/0` call: `true` passes, `false` (the
+  native side answered, but there is no radio, as on every simulator and
+  emulator) is `{:skip, :needs_hardware}`, `:disabled` is a skip naming the
+  switched-off radio, and an error answer or the host stub's
+  `nif_not_loaded` fails. Run it with `mix mob.selftest` from a host app
+  (mob_dev 0.7.17). `mob_version` in the manifest is now `~> 0.9`.
+
+### Changed
+
+- **Requires mob 0.9.15 or later** (was `~> 0.7`): hosts on mob 0.7 or 0.8
+  must upgrade before taking this release.
+- **Android: `nfc_available/0` no longer answers `false` without asking the
+  radio.** `false` now means only "no NFC hardware"; the other answers are:
+  - `:disabled`: the radio is present but switched off;
+  - `{:error, :bridge_not_registered}`: `MobNfcBridge.register()` never ran
+    or the method-id lookup failed;
+  - `{:error, :no_activity}`: the bootstrap hasn't handed the bridge an
+    Activity;
+  - `{:error, :no_jni_env}`: no JNIEnv could be attached;
+  - `{:error, :bridge_exception}`: the Kotlin side threw (a pending Java
+    exception is now detected and cleared);
+  - `{:error, :unknown_state}`: the bridge returned a code the NIF doesn't
+    know.
+
+  The Kotlin bridge method is now `nfc_state(): Int` (was
+  `nfc_available(): Boolean`). `MobNfc.available?/0` is unchanged (still
+  `false` for all of these). Method-id lookups in `nativeRegister` now clear
+  a pending `NoSuchMethodError` so one missing method can't poison the rest.
+
+---
+
 ## [0.1.4] - 2026-10-05
 
 Fixes from the Operator v1 release review (MOB-395).

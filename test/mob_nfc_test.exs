@@ -1,6 +1,10 @@
 defmodule MobNfcTest do
   use ExUnit.Case, async: true
 
+  alias MobNfc.SelfTest
+
+  @plugin_dir Path.expand("..", __DIR__)
+
   # The NIF is never loaded in the host test env, so these exercise the pure
   # Elixir layer: platform gating and the manifest contract. Native behavior is
   # verified on-device (see the plugin CLAUDE.md / README).
@@ -202,6 +206,102 @@ defmodule MobNfcTest do
       assert @manifest.android.bridge_class == "io.mob.nfc.MobNfcBridge"
       assert @manifest.android.jni_source =~ "mob_nfc_jni.c"
       assert @manifest.android.bridge_kt =~ "MobNfcBridge.kt"
+    end
+
+    test "declares the self-test, which passes the validator without a selftest warning" do
+      {:ok, m} = MobDev.Plugin.Manifest.load(@plugin_dir)
+      assert m.selftest == MobNfc.SelfTest
+
+      assert %{errors: [], warnings: warnings} =
+               MobDev.Plugin.Validator.validate_plugin(m, @plugin_dir)
+
+      refute Enum.any?(warnings, &(&1 =~ "selftest"))
+    end
+  end
+
+  describe "MobNfc.SelfTest" do
+    test "on a host with no native library linked it fails, naming the NIF, instead of raising" do
+      assert {:fail, reason} = result = SelfTest.run(%{platform: :android, device: :emulator})
+      assert reason =~ "mob_nfc_nif is not linked"
+      assert reason =~ "nif_not_loaded"
+      assert Mob.Plugin.SelfTest.result?(result)
+    end
+
+    test "a radio present and enabled passes" do
+      assert SelfTest.classify(true) == :pass
+      assert Mob.Plugin.SelfTest.result?(:pass)
+    end
+
+    test "an answered false (no radio) is a needs_hardware skip" do
+      assert SelfTest.classify(false) == {:skip, :needs_hardware}
+      assert Mob.Plugin.SelfTest.result?({:skip, :needs_hardware})
+    end
+
+    test "an answered :disabled (radio present, switched off) is a skip saying so, not needs_hardware" do
+      assert {:skip, reason} = result = SelfTest.classify(:disabled)
+      assert reason =~ "switched off"
+      assert Mob.Plugin.SelfTest.result?(result)
+    end
+
+    test "every Android error answer fails with its own reason" do
+      for {answer, prefix} <- [
+            {{:error, :bridge_not_registered}, "Kotlin MobNfcBridge not registered"},
+            {{:error, :no_activity}, "MobNfcBridge has no Activity"},
+            {{:error, :no_jni_env}, "no JNIEnv could be attached"},
+            {{:error, :bridge_exception}, "MobNfcBridge.nfc_state() threw"}
+          ] do
+        assert {:fail, reason} = result = SelfTest.classify(answer)
+        assert String.starts_with?(reason, prefix)
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+
+    test "any other answer fails, quoting it" do
+      for answer <- [{:error, :unknown_state}, {:error, :unsupported}, :ok, nil] do
+        assert {:fail, reason} = result = SelfTest.classify(answer)
+        assert reason =~ "nfc_available/0 returned #{inspect(answer)}"
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+  end
+
+  describe "Android JNI seam" do
+    # nativeRegister looks bridge methods up by name + JNI signature; a drift
+    # between the zig lookup and the Kotlin declaration only shows on a device
+    # (as {:error, :bridge_not_registered} for nfc_state). Pin them together.
+    @jni_types %{"J" => "Long", "I" => "Int", "Z" => "Boolean", "Ljava/lang/String;" => "String"}
+
+    defp kotlin_sig(sig) do
+      [_, args, ret] = Regex.run(~r/^\((.*)\)(.+)$/, sig)
+      params = Regex.scan(~r/L[^;]+;|[JIZ]/, args) |> Enum.map(fn [t] -> @jni_types[t] end)
+      {params, if(ret == "V", do: nil, else: @jni_types[ret])}
+    end
+
+    test "every method nativeRegister caches is a Kotlin bridge method with that signature" do
+      zig = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_nfc_nif.zig"))
+      kt = File.read!(Path.join(@plugin_dir, "priv/native/android/MobNfcBridge.kt"))
+
+      lookups = Regex.scan(~r/cacheMethod\(jenv, cls, "(\w+)", "([^"]+)"\)/, zig)
+      assert ["nfc_state", "()I"] in Enum.map(lookups, &tl/1)
+
+      for [_, name, sig] <- lookups do
+        {params, ret} = kotlin_sig(sig)
+        # Bridge methods live on a Kotlin `object`: without @JvmStatic they are
+        # instance methods and GetStaticMethodID misses them.
+        match =
+          Regex.run(~r/@JvmStatic\s+fun #{name}\(([^)]*)\)(?::\s*(\w+))?/, kt,
+            capture: :all_but_first
+          )
+
+        assert match, "#{name} is looked up in zig but not a @JvmStatic fun in MobNfcBridge.kt"
+        [kt_params | kt_ret] = match
+
+        kt_types =
+          Regex.scan(~r/:\s*(\w+)\??/, kt_params) |> Enum.map(fn [_, t] -> t end)
+
+        assert kt_types == params, "#{name}: zig signature #{sig} vs Kotlin (#{kt_params})"
+        assert List.first(kt_ret) == ret, "#{name}: Kotlin return #{inspect(kt_ret)} vs #{sig}"
+      end
     end
   end
 

@@ -37,8 +37,8 @@ defmodule MobNfc.MixProject do
     # :mob is the runtime dep; :mob_dev is test-only (manifest validators) and
     # never ships. Both from Hex so the package builds off this machine + in CI.
     [
-      {:mob, "~> 0.7"},
-      {:mob_dev, "~> 0.6", only: [:dev, :test], runtime: false},
+      {:mob, "~> 0.9 and >= 0.9.15"},
+      {:mob_dev, "~> 0.7.17", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4.2", only: [:dev, :test], runtime: false},

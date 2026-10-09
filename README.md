@@ -68,6 +68,10 @@ MobNfc.emulate_ndef(socket, rec, writable: true)   # a reader can write into it
 `MobNfc.available?/0` reports whether the radio is present and enabled; reading
 is a no-op on the simulator/emulator.
 
+`mix mob.selftest` (mob_dev 0.7.17+) runs `MobNfc.SelfTest` on a device: one
+read-only `nfc_available/0` call, passing when the radio is on and skipping
+(`:needs_hardware`) when it answers without one, as simulators and emulators do.
+
 ### Android HCE: foreground-only, unlocked-only
 
 - `{:nfc, :emulation_started}` arrives only when emulation is actually live:
